@@ -4,6 +4,9 @@
 >
 > 语义正确性不靠模型评测，而由 **SQL 断言**守护 —— 每一条语义关系都可被查询、被验证、被推翻。
 
+📖 **第一次接触本项目？请先读 [使用说明书（GETTING_STARTED.md）](GETTING_STARTED.md)** ——
+从克隆到跑通、从看懂数据到改数据，全部命令都实测过。
+
 ---
 
 ## 核心理念
@@ -72,6 +75,8 @@ python validate_medical.py
 
 ```
 数据库logos/
+├── README.md                                  # 项目门面
+├── GETTING_STARTED.md                         # ★ 使用说明书（克隆后先读这个）
 ├── schema_v3.sql                              # STRICT 表结构（52 表 / 10 触发器 / 34 索引 / 5 视图）
 │
 ├── seed_general_v3.sql                        # 通用领域种子
