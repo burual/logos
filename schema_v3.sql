@@ -42,13 +42,13 @@ PRAGMA foreign_keys = ON;
  * 1. 元数据层
  * ========================================================================= */
 
-CREATE TABLE schema_meta (
+CREATE TABLE IF NOT EXISTS schema_meta (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 ) STRICT;
 
-CREATE TABLE sources (
+CREATE TABLE IF NOT EXISTS sources (
     source_id    INTEGER PRIMARY KEY,
     name         TEXT NOT NULL UNIQUE,
     kind         TEXT NOT NULL CHECK (kind IN
@@ -61,7 +61,7 @@ CREATE TABLE sources (
 ) STRICT;
 
 -- 领域注册表：新增领域库只 INSERT 一行，不改任何表结构
-CREATE TABLE domains (
+CREATE TABLE IF NOT EXISTS domains (
     domain      TEXT PRIMARY KEY,
     description TEXT,
     db_path     TEXT,                    -- 跨库(ATTACH)时的物理路径，NULL 表示本库
@@ -70,14 +70,14 @@ CREATE TABLE domains (
 ) STRICT;
 
 -- 语义类别（本体骨架）：供字/词/量词类别默认值共用
-CREATE TABLE semantic_categories (
+CREATE TABLE IF NOT EXISTS semantic_categories (
     cat         TEXT PRIMARY KEY,
     parent_cat  TEXT REFERENCES semantic_categories(cat),
     description TEXT
 ) STRICT;
 
 -- 语义特征（义素）：支撑选择限制，比纯类别层级更细粒度
-CREATE TABLE semantic_features (
+CREATE TABLE IF NOT EXISTS semantic_features (
     feature       TEXT PRIMARY KEY,       -- +animate / +human / +countable ...
     feature_group TEXT NOT NULL CHECK (feature_group IN ('生命度','具体性','可数性','自主性','有界性','极性')),
     value_type    TEXT NOT NULL CHECK (value_type IN ('boolean','enum','number')),
@@ -85,7 +85,7 @@ CREATE TABLE semantic_features (
 ) STRICT;
 
 -- 词性标签表（北大计算语言学所标记集 + 现代汉语词类体系）
-CREATE TABLE pos_tags (
+CREATE TABLE IF NOT EXISTS pos_tags (
     pos         TEXT PRIMARY KEY,          -- n / v / a / p / u ...
     name        TEXT NOT NULL UNIQUE,      -- 名词 / 动词 / 介词 / 助词
     pos_group   TEXT NOT NULL CHECK (pos_group IN ('实词','虚词','特殊')),
@@ -93,21 +93,21 @@ CREATE TABLE pos_tags (
 ) STRICT;
 
 -- 句法成分（与语义角色解耦：汉语是"话题优先"语言，二者不等同）
-CREATE TABLE syntactic_functions (
+CREATE TABLE IF NOT EXISTS syntactic_functions (
     function_id TEXT PRIMARY KEY,          -- 主语/谓语/宾语/定语/状语/补语/中心语/独立语
     description TEXT NOT NULL,
     position    TEXT NOT NULL CHECK (position IN ('前','中','后','灵活'))
 ) STRICT;
 
 -- 句类（语气）
-CREATE TABLE sentence_moods (
+CREATE TABLE IF NOT EXISTS sentence_moods (
     mood       TEXT PRIMARY KEY,           -- 陈述/疑问/祈使/感叹
     description TEXT NOT NULL,
     typical_markers TEXT
 ) STRICT;
 
 -- 补语类型：汉语述补结构是核心句型，v2.0 完全缺失
-CREATE TABLE complement_types (
+CREATE TABLE IF NOT EXISTS complement_types (
     comp_type   TEXT PRIMARY KEY,          -- 结果补语/趋向补语/可能补语/程度补语/数量补语/状态补语/时地补语
     description TEXT NOT NULL,
     marker      TEXT,                      -- 得 / 不 / NULL
@@ -119,13 +119,13 @@ CREATE TABLE complement_types (
  * 2. 字层
  * ========================================================================= */
 
-CREATE TABLE radical_semantics (
+CREATE TABLE IF NOT EXISTS radical_semantics (
     radical  TEXT PRIMARY KEY,
     meaning  TEXT NOT NULL,
     examples TEXT
 ) STRICT;
 
-CREATE TABLE characters (
+CREATE TABLE IF NOT EXISTS characters (
     char          TEXT PRIMARY KEY COLLATE BINARY,
     radical       TEXT REFERENCES radical_semantics(radical),
     strokes       INTEGER CHECK (strokes IS NULL OR strokes BETWEEN 1 AND 64),
@@ -139,7 +139,7 @@ CREATE TABLE characters (
 ) STRICT;
 
 -- 多音字：一字多音，文白异读、姓氏地名特殊读音的正式承载表
-CREATE TABLE character_readings (
+CREATE TABLE IF NOT EXISTS character_readings (
     char         TEXT NOT NULL REFERENCES characters(char) ON DELETE CASCADE,
     pinyin       TEXT NOT NULL,            -- 规范拼音（数字标调）: 'xing2'
     tone         INTEGER NOT NULL CHECK (tone BETWEEN 0 AND 5),   -- 0 = 轻声
@@ -151,7 +151,7 @@ CREATE TABLE character_readings (
 ) STRICT, WITHOUT ROWID;
 
 -- 音变规则：变调 / 轻声 / 儿化。v2.0 只在 pinyin_json 里塞字符串，无法推理
-CREATE TABLE phonological_rules (
+CREATE TABLE IF NOT EXISTS phonological_rules (
     rule_id      INTEGER PRIMARY KEY,
     rule_type    TEXT NOT NULL CHECK (rule_type IN
                    ('变调','连读变调','轻声','儿化','儿化变韵','声调中和')),
@@ -168,7 +168,7 @@ CREATE TABLE phonological_rules (
  *    '葡萄' 两字一语素；'儿' 是词尾；'老-' 是前缀。v2.0 把三者压进字层
  * ========================================================================= */
 
-CREATE TABLE morphemes (
+CREATE TABLE IF NOT EXISTS morphemes (
     morpheme_id   INTEGER PRIMARY KEY,
     form          TEXT NOT NULL,
     morpheme_type TEXT NOT NULL CHECK (morpheme_type IN
@@ -184,7 +184,7 @@ CREATE TABLE morphemes (
  * 4. 词层
  * ========================================================================= */
 
-CREATE TABLE words (
+CREATE TABLE IF NOT EXISTS words (
     word_id      INTEGER PRIMARY KEY,
     word         TEXT NOT NULL UNIQUE COLLATE BINARY,
     -- 生成列：不再手工维护 char_count
@@ -203,7 +203,7 @@ CREATE TABLE words (
 ) STRICT;
 
 -- 词的语素切分
-CREATE TABLE word_morphemes (
+CREATE TABLE IF NOT EXISTS word_morphemes (
     word_id     INTEGER NOT NULL REFERENCES words(word_id) ON DELETE CASCADE,
     seq         INTEGER NOT NULL CHECK (seq >= 1),
     morpheme_id INTEGER NOT NULL REFERENCES morphemes(morpheme_id),
@@ -211,7 +211,7 @@ CREATE TABLE word_morphemes (
     PRIMARY KEY (word_id, seq)
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE senses (
+CREATE TABLE IF NOT EXISTS senses (
     sense_id          INTEGER PRIMARY KEY,
     word_id           INTEGER NOT NULL REFERENCES words(word_id) ON DELETE CASCADE,
     pos               TEXT NOT NULL REFERENCES pos_tags(pos),
@@ -236,7 +236,7 @@ CREATE TABLE senses (
 ) STRICT;
 
 -- 义项的语义特征（义素分析）—— 选择限制的细粒度依据
-CREATE TABLE sense_features (
+CREATE TABLE IF NOT EXISTS sense_features (
     sense_id INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
     feature  TEXT NOT NULL REFERENCES semantic_features(feature),
     value    TEXT NOT NULL,
@@ -244,7 +244,7 @@ CREATE TABLE sense_features (
 ) STRICT, WITHOUT ROWID;
 
 -- 义项 ↔ 语义类别
-CREATE TABLE sense_categories (
+CREATE TABLE IF NOT EXISTS sense_categories (
     sense_id INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
     cat      TEXT NOT NULL REFERENCES semantic_categories(cat),
     is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0,1)),
@@ -253,7 +253,7 @@ CREATE TABLE sense_categories (
 
 /* ---- 4.1 虚词：独立建模 + 直接映射语义角色 ---- */
 
-CREATE TABLE function_words (
+CREATE TABLE IF NOT EXISTS function_words (
     sense_id     INTEGER PRIMARY KEY REFERENCES senses(sense_id) ON DELETE CASCADE,
     category     TEXT NOT NULL CHECK (category IN
                    ('介词','连词','结构助词','动态助词','语气助词','比况助词','数助词',
@@ -269,7 +269,7 @@ CREATE TABLE function_words (
 -- 关键设计：介词/助词直接声明它引出哪个语义角色
 --   把→受事(前置)  被→施事(前置)  从→起点(前置)  在→处所(前置)  用→工具(前置)
 --   给→与事(前置)  对→对象(前置)  比→比较对象(前置)  了→体(后置)
-CREATE TABLE function_word_roles (
+CREATE TABLE IF NOT EXISTS function_word_roles (
     sense_id  INTEGER NOT NULL REFERENCES function_words(sense_id) ON DELETE CASCADE,
     role      TEXT NOT NULL REFERENCES semantic_roles(role),
     position  TEXT NOT NULL CHECK (position IN ('前置','后置','框式')),
@@ -279,7 +279,7 @@ CREATE TABLE function_word_roles (
 /* ---- 4.2 量词 ---- */
 
 -- 量词 = 义项的特化（'把' 既是动词/介词/量词），不再另起 word 唯一约束
-CREATE TABLE classifiers (
+CREATE TABLE IF NOT EXISTS classifiers (
     classifier_sense_id INTEGER PRIMARY KEY REFERENCES senses(sense_id) ON DELETE CASCADE,
     kind       TEXT NOT NULL CHECK (kind IN
                  ('名量词','动量词','复合量词','借用量词','度量词','不定量词','时间量词')),
@@ -290,7 +290,7 @@ CREATE TABLE classifiers (
     source_noun_sense_id INTEGER REFERENCES senses(sense_id)              -- 借用量词的源名词
 ) STRICT;
 
-CREATE TABLE noun_classifier_pairs (
+CREATE TABLE IF NOT EXISTS noun_classifier_pairs (
     noun_sense_id       INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
     classifier_sense_id INTEGER NOT NULL REFERENCES classifiers(classifier_sense_id) ON DELETE CASCADE,
     preference          REAL NOT NULL DEFAULT 1.0 CHECK (preference BETWEEN 0 AND 1),
@@ -300,7 +300,7 @@ CREATE TABLE noun_classifier_pairs (
 ) STRICT, WITHOUT ROWID;
 
 -- 类别级默认量词：'动物类 → 只'，避免为 10 万个名词逐一建行（可扩展性关键）
-CREATE TABLE classifier_class_defaults (
+CREATE TABLE IF NOT EXISTS classifier_class_defaults (
     cat                 TEXT NOT NULL REFERENCES semantic_categories(cat),
     classifier_sense_id INTEGER NOT NULL REFERENCES classifiers(classifier_sense_id),
     preference          REAL NOT NULL DEFAULT 1.0 CHECK (preference BETWEEN 0 AND 1),
@@ -309,7 +309,7 @@ CREATE TABLE classifier_class_defaults (
 
 /* ---- 4.3 重叠式 ---- */
 
-CREATE TABLE reduplication_patterns (
+CREATE TABLE IF NOT EXISTS reduplication_patterns (
     pattern_id  INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,      -- AA / AABB / ABAB / A一A / ABB / AA(量词) / 一AA
     pos         TEXT REFERENCES pos_tags(pos),
@@ -318,7 +318,7 @@ CREATE TABLE reduplication_patterns (
     example     TEXT
 ) STRICT;
 
-CREATE TABLE word_reduplications (
+CREATE TABLE IF NOT EXISTS word_reduplications (
     word_id         INTEGER NOT NULL REFERENCES words(word_id) ON DELETE CASCADE,
     pattern_id      INTEGER NOT NULL REFERENCES reduplication_patterns(pattern_id),
     surface         TEXT NOT NULL,                 -- 高高兴兴 / 看一看
@@ -328,7 +328,7 @@ CREATE TABLE word_reduplications (
 
 /* ---- 4.4 离合词 ---- */
 
-CREATE TABLE separable_patterns (
+CREATE TABLE IF NOT EXISTS separable_patterns (
     sep_pattern_id INTEGER PRIMARY KEY,
     word_id        INTEGER NOT NULL REFERENCES words(word_id) ON DELETE CASCADE,
     kind           TEXT NOT NULL CHECK (kind IN
@@ -340,7 +340,7 @@ CREATE TABLE separable_patterns (
 ) STRICT;
 
 -- 黏着宾语：'澡/忙/架' 不能独立作名词条目，只能依附特定动词
-CREATE TABLE bound_objects (
+CREATE TABLE IF NOT EXISTS bound_objects (
     object_word_id INTEGER NOT NULL REFERENCES words(word_id) ON DELETE CASCADE,
     host_verb_id   INTEGER NOT NULL REFERENCES words(word_id),
     PRIMARY KEY (object_word_id, host_verb_id)
@@ -353,7 +353,7 @@ CREATE TABLE bound_objects (
 
 /* 节点注册表：把"义项"之外的所有图节点纳入同一张图
  *   → 加新领域库、新词条、新句式都不需要新增关系表（可扩展性） */
-CREATE TABLE entity_nodes (
+CREATE TABLE IF NOT EXISTS entity_nodes (
     node_id      INTEGER PRIMARY KEY,
     node_type    TEXT NOT NULL CHECK (node_type IN
                    ('character','morpheme','word','pattern','domain_entity','context','rule','utterance')),
@@ -364,7 +364,7 @@ CREATE TABLE entity_nodes (
     UNIQUE (node_type, domain, label)
 ) STRICT;
 
-CREATE TABLE relation_types (
+CREATE TABLE IF NOT EXISTS relation_types (
     relation       TEXT PRIMARY KEY,
     relation_class TEXT NOT NULL CHECK (relation_class IN
                      ('层级','属性','事件','词汇语义','论元','篇章','领域')),
@@ -383,7 +383,7 @@ CREATE TABLE relation_types (
 
 /* 统一关系表（取代 relations + cross_links）
  * 范式：只存"正向"边，逆向关系由 v_relations_all 视图在线推导 → 无冗余、无更新异常 */
-CREATE TABLE relations (
+CREATE TABLE IF NOT EXISTS relations (
     relation_id INTEGER PRIMARY KEY,
     src_kind    TEXT NOT NULL DEFAULT 'sense' CHECK (src_kind IN ('sense','node')),
     src_id      INTEGER NOT NULL,
@@ -401,7 +401,7 @@ CREATE TABLE relations (
 ) STRICT;
 
 -- 论元槽位的选择限制（键值化，可被索引与查询，不再埋在一段逗号串里）
-CREATE TABLE relation_constraints (
+CREATE TABLE IF NOT EXISTS relation_constraints (
     sense_id   INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
     slot       TEXT NOT NULL CHECK (slot IN
                  ('agent','patient','dative','instrument','location','time','result','target','theme')),
@@ -417,7 +417,7 @@ CREATE TABLE relation_constraints (
  * ========================================================================= */
 
 -- 语义角色：12 → 34，按"参与者/环境/性状/命题"分组，可层级继承
-CREATE TABLE semantic_roles (
+CREATE TABLE IF NOT EXISTS semantic_roles (
     role        TEXT PRIMARY KEY,
     parent_role TEXT REFERENCES semantic_roles(role),
     role_group  TEXT NOT NULL CHECK (role_group IN ('参与者','环境','计量','因果','命题')),
@@ -426,7 +426,7 @@ CREATE TABLE semantic_roles (
     case_marker TEXT                       -- 典型介词标记: 把/被/从/在/用/给/对/比
 ) STRICT;
 
-CREATE TABLE sentence_patterns (
+CREATE TABLE IF NOT EXISTS sentence_patterns (
     pattern_id  INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     category    TEXT NOT NULL CHECK (category IN
@@ -442,7 +442,7 @@ CREATE TABLE sentence_patterns (
 ) STRICT;
 
 -- 唯一的槽位真源：取消 v2.0 的 required_slots / optional_slots 冗余 JSON 列
-CREATE TABLE pattern_slots (
+CREATE TABLE IF NOT EXISTS pattern_slots (
     pattern_id         INTEGER NOT NULL REFERENCES sentence_patterns(pattern_id) ON DELETE CASCADE,
     slot_name          TEXT NOT NULL,
     position           INTEGER NOT NULL CHECK (position >= 1),
@@ -454,7 +454,7 @@ CREATE TABLE pattern_slots (
     UNIQUE (pattern_id, position)
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE slot_constraints (
+CREATE TABLE IF NOT EXISTS slot_constraints (
     pattern_id  INTEGER NOT NULL,
     slot_name   TEXT NOT NULL,
     kind        TEXT NOT NULL CHECK (kind IN
@@ -468,7 +468,7 @@ CREATE TABLE slot_constraints (
 ) STRICT, WITHOUT ROWID;
 
 -- 述补结构的补语实例（动结/动趋/可能补语）
-CREATE TABLE complements (
+CREATE TABLE IF NOT EXISTS complements (
     complement_id  INTEGER PRIMARY KEY,
     comp_type      TEXT NOT NULL REFERENCES complement_types(comp_type),
     head_sense_id  INTEGER NOT NULL REFERENCES senses(sense_id),   -- 述语
@@ -485,7 +485,7 @@ CREATE TABLE complements (
  * ========================================================================= */
 
 /* 闭包策略表：只有 is_transitive=1 的关系才可物化；默认 batch 模式 */
-CREATE TABLE closure_policy (
+CREATE TABLE IF NOT EXISTS closure_policy (
     relation   TEXT PRIMARY KEY REFERENCES relation_types(relation),
     mode       TEXT NOT NULL DEFAULT 'batch' CHECK (mode IN ('incremental','batch','off')),
     max_depth  INTEGER NOT NULL DEFAULT 12 CHECK (max_depth BETWEEN 1 AND 64),
@@ -513,7 +513,7 @@ CREATE TABLE closure_policy (
  * 注意：first_edge 是**弱引用**，刻意不加外键。
  *       若加 ON DELETE SET NULL，外键动作会在 AFTER DELETE 触发器之前把值清空，
  *       触发器就再也匹配不到失效行（这是 v3.0 初稿踩到的真实坑）。 */
-CREATE TABLE closure (
+CREATE TABLE IF NOT EXISTS closure (
     relation   TEXT NOT NULL REFERENCES relation_types(relation),
     ancestor   INTEGER NOT NULL,
     descendant INTEGER NOT NULL,
@@ -524,12 +524,12 @@ CREATE TABLE closure (
 ) STRICT, WITHOUT ROWID;
 
 -- 重建队列：INSERT 一行即触发该关系的全量重建（应用层唯一需要知道的维护接口）
-CREATE TABLE closure_rebuild_queue (
+CREATE TABLE IF NOT EXISTS closure_rebuild_queue (
     relation     TEXT PRIMARY KEY REFERENCES relation_types(relation),
     requested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 ) STRICT;
 
-CREATE TABLE inference_rules (
+CREATE TABLE IF NOT EXISTS inference_rules (
     rule_id      INTEGER PRIMARY KEY,
     name         TEXT NOT NULL UNIQUE,
     rule_type    TEXT NOT NULL CHECK (rule_type IN
@@ -545,7 +545,7 @@ CREATE TABLE inference_rules (
     CHECK (rule_type <> 'inherit' OR condition_sql IS NOT NULL)
 ) STRICT;
 
-CREATE TABLE rule_premises (
+CREATE TABLE IF NOT EXISTS rule_premises (
     rule_id   INTEGER NOT NULL REFERENCES inference_rules(rule_id) ON DELETE CASCADE,
     seq       INTEGER NOT NULL CHECK (seq >= 1),
     kind      TEXT NOT NULL CHECK (kind IN ('edge','closure','feature','pattern','slot','category')),
@@ -556,7 +556,7 @@ CREATE TABLE rule_premises (
     PRIMARY KEY (rule_id, seq)
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE rule_conclusions (
+CREATE TABLE IF NOT EXISTS rule_conclusions (
     rule_id    INTEGER NOT NULL REFERENCES inference_rules(rule_id) ON DELETE CASCADE,
     seq        INTEGER NOT NULL CHECK (seq >= 1),
     kind       TEXT NOT NULL CHECK (kind IN ('edge','feature','tag','role','reject','bind')),
@@ -568,7 +568,7 @@ CREATE TABLE rule_conclusions (
 ) STRICT, WITHOUT ROWID;
 
 /* 省略回填：同一槽位允许多个候选策略 + 优先级（v2.0 的 PK 只允许一条，是硬伤） */
-CREATE TABLE ellipsis_rules (
+CREATE TABLE IF NOT EXISTS ellipsis_rules (
     ellipsis_rule_id INTEGER PRIMARY KEY,
     context_type     TEXT NOT NULL CHECK (context_type IN
                        ('dialogue','narrative','imperative','expository','topic_chain')),
@@ -587,7 +587,7 @@ CREATE TABLE ellipsis_rules (
  * 8. 篇章层（新增）—— 汉语靠话题链与零形回指消解省略，v2.0 无承载表
  * ========================================================================= */
 
-CREATE TABLE utterances (
+CREATE TABLE IF NOT EXISTS utterances (
     utterance_id INTEGER PRIMARY KEY,
     doc_id       TEXT NOT NULL DEFAULT 'default',
     seq          INTEGER NOT NULL CHECK (seq >= 1),
@@ -599,7 +599,7 @@ CREATE TABLE utterances (
     UNIQUE (doc_id, seq)
 ) STRICT;
 
-CREATE TABLE topic_chains (
+CREATE TABLE IF NOT EXISTS topic_chains (
     chain_id   INTEGER PRIMARY KEY,
     doc_id     TEXT NOT NULL,
     topic_node_id INTEGER,                 -- 话题所指（sense 或 entity_node）
@@ -609,7 +609,7 @@ CREATE TABLE topic_chains (
     CHECK (end_seq IS NULL OR end_seq >= start_seq)
 ) STRICT;
 
-CREATE TABLE anaphora (
+CREATE TABLE IF NOT EXISTS anaphora (
     anaphora_id  INTEGER PRIMARY KEY,
     utterance_id INTEGER NOT NULL REFERENCES utterances(utterance_id) ON DELETE CASCADE,
     slot_role    TEXT REFERENCES semantic_roles(role),
@@ -627,14 +627,14 @@ CREATE TABLE anaphora (
  * 9. 管理层
  * ========================================================================= */
 
-CREATE TABLE contexts (
+CREATE TABLE IF NOT EXISTS contexts (
     context_id  INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     description TEXT,
     domain      TEXT REFERENCES domains(domain)
 ) STRICT;
 
-CREATE TABLE sense_contexts (
+CREATE TABLE IF NOT EXISTS sense_contexts (
     sense_id   INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
     context_id INTEGER NOT NULL REFERENCES contexts(context_id) ON DELETE CASCADE,
     relevance  REAL NOT NULL DEFAULT 1.0 CHECK (relevance BETWEEN 0 AND 1),
@@ -642,7 +642,7 @@ CREATE TABLE sense_contexts (
     PRIMARY KEY (sense_id, context_id)
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE import_batches (
+CREATE TABLE IF NOT EXISTS import_batches (
     batch_id    INTEGER PRIMARY KEY,
     source_id   INTEGER REFERENCES sources(source_id),
     started_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -653,7 +653,7 @@ CREATE TABLE import_batches (
 ) STRICT;
 
 /* 开放属性（JSON1）：加新领域字段不改表结构 */
-CREATE TABLE attributes (
+CREATE TABLE IF NOT EXISTS attributes (
     attr_id    INTEGER PRIMARY KEY,
     owner_kind TEXT NOT NULL CHECK (owner_kind IN ('sense','word','character','pattern','node','relation','utterance')),
     owner_id   INTEGER NOT NULL,
@@ -663,7 +663,7 @@ CREATE TABLE attributes (
     UNIQUE (owner_kind, owner_id, key, value_json)
 ) STRICT;
 
-CREATE TABLE changelog (
+CREATE TABLE IF NOT EXISTS changelog (
     change_id  INTEGER PRIMARY KEY,
     table_name TEXT NOT NULL,
     record_id  TEXT NOT NULL,              -- TEXT：兼容 characters.char 这类文本主键
@@ -682,7 +682,7 @@ CREATE TABLE changelog (
  *    unicode61: 作用于 jieba 预分词后的 definition_seg，支持 1-2 字词
  * ========================================================================= */
 
-CREATE VIRTUAL TABLE senses_fts_trigram USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS senses_fts_trigram USING fts5(
     definition,
     example,
     content='senses',
@@ -690,7 +690,7 @@ CREATE VIRTUAL TABLE senses_fts_trigram USING fts5(
     tokenize='trigram'
 );
 
-CREATE VIRTUAL TABLE senses_fts_seg USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS senses_fts_seg USING fts5(
     definition_seg,
     content='senses',
     content_rowid='sense_id',
@@ -698,21 +698,21 @@ CREATE VIRTUAL TABLE senses_fts_seg USING fts5(
 );
 
 -- 外部内容表的同步触发器（保持 senses_fts_* 与 senses 一致）
-CREATE TRIGGER tr_senses_fts_ai AFTER INSERT ON senses BEGIN
+CREATE TRIGGER IF NOT EXISTS tr_senses_fts_ai AFTER INSERT ON senses BEGIN
     INSERT INTO senses_fts_trigram(rowid, definition, example)
         VALUES (new.sense_id, new.definition, new.example);
     INSERT INTO senses_fts_seg(rowid, definition_seg)
         VALUES (new.sense_id, new.definition_seg);
 END;
 
-CREATE TRIGGER tr_senses_fts_ad AFTER DELETE ON senses BEGIN
+CREATE TRIGGER IF NOT EXISTS tr_senses_fts_ad AFTER DELETE ON senses BEGIN
     INSERT INTO senses_fts_trigram(senses_fts_trigram, rowid, definition, example)
         VALUES ('delete', old.sense_id, old.definition, old.example);
     INSERT INTO senses_fts_seg(senses_fts_seg, rowid, definition_seg)
         VALUES ('delete', old.sense_id, old.definition_seg);
 END;
 
-CREATE TRIGGER tr_senses_fts_au AFTER UPDATE ON senses BEGIN
+CREATE TRIGGER IF NOT EXISTS tr_senses_fts_au AFTER UPDATE ON senses BEGIN
     INSERT INTO senses_fts_trigram(senses_fts_trigram, rowid, definition, example)
         VALUES ('delete', old.sense_id, old.definition, old.example);
     INSERT INTO senses_fts_seg(senses_fts_seg, rowid, definition_seg)
@@ -729,7 +729,7 @@ END;
  * ========================================================================= */
 
 -- 正向 + 逆向 + 对称展开：杜绝反向边冗余存储
-CREATE VIEW v_relations_all AS
+CREATE VIEW IF NOT EXISTS v_relations_all AS
     SELECT relation_id, src_kind, src_id, relation, dst_kind, dst_id, weight, confidence, 0 AS is_inferred
       FROM relations
     UNION ALL
@@ -742,7 +742,7 @@ CREATE VIEW v_relations_all AS
      WHERE t.direction = 'symmetric';
 
 -- 词 → 义项 → 虚词/量词 的合并视图（应用层常用）
-CREATE VIEW v_senses_full AS
+CREATE VIEW IF NOT EXISTS v_senses_full AS
 SELECT s.sense_id, w.word, w.word_id, w.char_count, s.pos, s.sense_no, s.definition,
        s.pinyin, s.frequency,
        CASE WHEN fw.sense_id IS NOT NULL THEN 1 ELSE 0 END AS is_function_word,
@@ -755,7 +755,7 @@ SELECT s.sense_id, w.word, w.word_id, w.char_count, s.pos, s.sense_no, s.definit
   LEFT JOIN classifiers cl    ON cl.classifier_sense_id = s.sense_id;
 
 -- 深度 1-2 的轻量闭包视图：常见推理无需触达物化闭包表
-CREATE VIEW v_closure_2 AS
+CREATE VIEW IF NOT EXISTS v_closure_2 AS
 SELECT r1.relation, r1.src_id AS ancestor, r2.dst_id AS descendant, 2 AS depth
   FROM relations r1
   JOIN relations r2 ON r2.src_id = r1.dst_id AND r2.relation = r1.relation
@@ -764,11 +764,11 @@ SELECT r1.relation, r1.src_id AS ancestor, r2.dst_id AS descendant, 2 AS depth
    AND r1.src_id <> r2.dst_id;
 
 -- 兼容 v2.0 表名，避免应用层立刻改代码
-CREATE VIEW entries AS
+CREATE VIEW IF NOT EXISTS entries AS
 SELECT word_id AS entry_id, word, char_count, is_separable, separator_pos
   FROM words;
 
-CREATE VIEW cross_links AS
+CREATE VIEW IF NOT EXISTS cross_links AS
 SELECT r.src_kind AS source_kind, r.src_id AS source_id,
        r.dst_kind AS target_kind, r.dst_id AS target_id, r.relation
   FROM relations r
@@ -793,46 +793,46 @@ SELECT r.src_kind AS source_kind, r.src_id AS source_id,
  *   某唯一索引的前缀也保留（例：closure(relation,ancestor) WHERE depth = 1）。
  * ========================================================================= */
 
-CREATE INDEX idx_words_separable      ON words(separator_pos) WHERE separator_pos IS NOT NULL;
-CREATE INDEX idx_words_type           ON words(word_type);
-CREATE INDEX idx_senses_pos           ON senses(pos) WHERE is_primary = 1;
-CREATE INDEX idx_senses_subcat        ON senses(subcategory) WHERE subcategory IS NOT NULL;
-CREATE INDEX idx_senses_derived       ON senses(derived_from) WHERE derived_from IS NOT NULL;
-CREATE INDEX idx_senses_plain         ON senses(pinyin_plain) WHERE pinyin_plain IS NOT NULL;
-CREATE INDEX idx_senses_initial       ON senses(pinyin_initial) WHERE pinyin_initial IS NOT NULL;
-CREATE INDEX idx_senses_freq          ON senses(frequency DESC) WHERE is_primary = 1;
-CREATE INDEX idx_function_words_cat   ON function_words(category, subcategory);
-CREATE INDEX idx_fw_roles_role        ON function_word_roles(role);
-CREATE INDEX idx_classifiers_kind     ON classifiers(kind, subtype);
-CREATE INDEX idx_nc_pairs_classifier  ON noun_classifier_pairs(classifier_sense_id, preference DESC);
-CREATE INDEX idx_char_readings_char   ON character_readings(char, is_default);
+CREATE INDEX IF NOT EXISTS idx_words_separable      ON words(separator_pos) WHERE separator_pos IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_words_type           ON words(word_type);
+CREATE INDEX IF NOT EXISTS idx_senses_pos           ON senses(pos) WHERE is_primary = 1;
+CREATE INDEX IF NOT EXISTS idx_senses_subcat        ON senses(subcategory) WHERE subcategory IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_senses_derived       ON senses(derived_from) WHERE derived_from IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_senses_plain         ON senses(pinyin_plain) WHERE pinyin_plain IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_senses_initial       ON senses(pinyin_initial) WHERE pinyin_initial IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_senses_freq          ON senses(frequency DESC) WHERE is_primary = 1;
+CREATE INDEX IF NOT EXISTS idx_function_words_cat   ON function_words(category, subcategory);
+CREATE INDEX IF NOT EXISTS idx_fw_roles_role        ON function_word_roles(role);
+CREATE INDEX IF NOT EXISTS idx_classifiers_kind     ON classifiers(kind, subtype);
+CREATE INDEX IF NOT EXISTS idx_nc_pairs_classifier  ON noun_classifier_pairs(classifier_sense_id, preference DESC);
+CREATE INDEX IF NOT EXISTS idx_char_readings_char   ON character_readings(char, is_default);
 
 -- 只留 dst 方向：src 方向 (src_kind,src_id,relation) 已被 UNIQUE 的隐含索引覆盖
-CREATE INDEX idx_relations_dst        ON relations(dst_kind, dst_id, relation);
-CREATE INDEX idx_relations_relation   ON relations(relation) WHERE src_kind = 'sense';
-CREATE INDEX idx_relations_ctx        ON relations(context_id) WHERE context_id IS NOT NULL;
-CREATE INDEX idx_relations_source     ON relations(source_id) WHERE source_id IS NOT NULL;
-CREATE INDEX idx_rel_constraints      ON relation_constraints(slot, kind, value);
-CREATE INDEX idx_entity_nodes_lookup  ON entity_nodes(node_type, domain, entity_class);
+CREATE INDEX IF NOT EXISTS idx_relations_dst        ON relations(dst_kind, dst_id, relation);
+CREATE INDEX IF NOT EXISTS idx_relations_relation   ON relations(relation) WHERE src_kind = 'sense';
+CREATE INDEX IF NOT EXISTS idx_relations_ctx        ON relations(context_id) WHERE context_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relations_source     ON relations(source_id) WHERE source_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_rel_constraints      ON relation_constraints(slot, kind, value);
+CREATE INDEX IF NOT EXISTS idx_entity_nodes_lookup  ON entity_nodes(node_type, domain, entity_class);
 
-CREATE INDEX idx_closure_relation_desc ON closure(relation, descendant, depth);
-CREATE INDEX idx_closure_first_edge    ON closure(first_edge) WHERE first_edge IS NOT NULL;
-CREATE INDEX idx_closure_depth1        ON closure(relation, ancestor) WHERE depth = 1;
+CREATE INDEX IF NOT EXISTS idx_closure_relation_desc ON closure(relation, descendant, depth);
+CREATE INDEX IF NOT EXISTS idx_closure_first_edge    ON closure(first_edge) WHERE first_edge IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_closure_depth1        ON closure(relation, ancestor) WHERE depth = 1;
 
-CREATE INDEX idx_slot_constraints     ON slot_constraints(kind, value);
-CREATE INDEX idx_complements_head     ON complements(head_sense_id, comp_type);
+CREATE INDEX IF NOT EXISTS idx_slot_constraints     ON slot_constraints(kind, value);
+CREATE INDEX IF NOT EXISTS idx_complements_head     ON complements(head_sense_id, comp_type);
 
-CREATE INDEX idx_ellipsis_ctx         ON ellipsis_rules(context_type, slot_role, priority DESC);
-CREATE INDEX idx_rule_premises        ON rule_premises(kind, subject, predicate);
-CREATE INDEX idx_rule_conclusions     ON rule_conclusions(kind, subject, relation);
+CREATE INDEX IF NOT EXISTS idx_ellipsis_ctx         ON ellipsis_rules(context_type, slot_role, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_rule_premises        ON rule_premises(kind, subject, predicate);
+CREATE INDEX IF NOT EXISTS idx_rule_conclusions     ON rule_conclusions(kind, subject, relation);
 
-CREATE INDEX idx_anaphora_utt         ON anaphora(utterance_id, slot_role);
-CREATE INDEX idx_anaphora_chain       ON anaphora(chain_id) WHERE chain_id IS NOT NULL;
-CREATE INDEX idx_topic_chains_doc     ON topic_chains(doc_id, start_seq);
-CREATE INDEX idx_sense_contexts_ctx   ON sense_contexts(context_id, relevance DESC);
-CREATE INDEX idx_changelog_record     ON changelog(table_name, record_id, changed_at DESC);
-CREATE INDEX idx_changelog_time       ON changelog(changed_at DESC);
-CREATE INDEX idx_source_id_lookup     ON sources(kind, name);
+CREATE INDEX IF NOT EXISTS idx_anaphora_utt         ON anaphora(utterance_id, slot_role);
+CREATE INDEX IF NOT EXISTS idx_anaphora_chain       ON anaphora(chain_id) WHERE chain_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_topic_chains_doc     ON topic_chains(doc_id, start_seq);
+CREATE INDEX IF NOT EXISTS idx_sense_contexts_ctx   ON sense_contexts(context_id, relevance DESC);
+CREATE INDEX IF NOT EXISTS idx_changelog_record     ON changelog(table_name, record_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_changelog_time       ON changelog(changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source_id_lookup     ON sources(kind, name);
 
 
 /* =========================================================================
@@ -840,7 +840,7 @@ CREATE INDEX idx_source_id_lookup     ON sources(kind, name);
  * ========================================================================= */
 
 /* ---- 13.1 关系端点存在性校验（异构节点的 FK 替代方案） ---- */
-CREATE TRIGGER tr_relations_validate_ai BEFORE INSERT ON relations
+CREATE TRIGGER IF NOT EXISTS tr_relations_validate_ai BEFORE INSERT ON relations
 WHEN EXISTS (SELECT 1 FROM (
         SELECT 1 WHERE
             (NEW.src_kind='sense' AND NOT EXISTS(SELECT 1 FROM senses WHERE sense_id=NEW.src_id))
@@ -853,7 +853,7 @@ BEGIN
 END;
 
 -- 端点身份不可变（异构 ID 换来源没有意义）
-CREATE TRIGGER tr_relations_freeze_kind_bu BEFORE UPDATE OF src_kind, src_id, dst_kind, dst_id ON relations
+CREATE TRIGGER IF NOT EXISTS tr_relations_freeze_kind_bu BEFORE UPDATE OF src_kind, src_id, dst_kind, dst_id ON relations
 BEGIN
     SELECT RAISE(ABORT, 'relations: 端点不可修改，请删除后重建');
 END;
@@ -878,7 +878,7 @@ END;
  *   (f) 关系必须有 closure_policy 行：触发器条件写的是 `mode = 'incremental'`，
  *       缺行时子查询返回 NULL、比较为假 → 静默不产生闭包，不报任何错。
  */
-CREATE TRIGGER tr_closure_edge_ai AFTER INSERT ON relations
+CREATE TRIGGER IF NOT EXISTS tr_closure_edge_ai AFTER INSERT ON relations
 WHEN NEW.src_kind='sense' AND NEW.dst_kind='sense'
  AND (SELECT is_transitive FROM relation_types WHERE relation = NEW.relation) = 1
  AND (SELECT mode FROM closure_policy WHERE relation = NEW.relation) = 'incremental'
@@ -924,7 +924,7 @@ BEGIN
 END;
 
 -- 删除边：先失效以其为见证的闭包行，再排队重建（删除是低频操作，重建保证正确）
-CREATE TRIGGER tr_closure_edge_ad AFTER DELETE ON relations
+CREATE TRIGGER IF NOT EXISTS tr_closure_edge_ad AFTER DELETE ON relations
 WHEN OLD.src_kind='sense' AND OLD.dst_kind='sense'
  AND (SELECT is_transitive FROM relation_types WHERE relation = OLD.relation) = 1
  AND (SELECT mode FROM closure_policy WHERE relation = OLD.relation) <> 'off'
@@ -939,7 +939,7 @@ END;
  * 借助 SQLite 的"裸列 + min()"规则：GROUP BY 时裸列取自取到最小值的行，
  * 从而一次取出「最短深度」与其对应见证边。
  */
-CREATE TRIGGER tr_closure_rebuild_ai AFTER INSERT ON closure_rebuild_queue
+CREATE TRIGGER IF NOT EXISTS tr_closure_rebuild_ai AFTER INSERT ON closure_rebuild_queue
 BEGIN
     DELETE FROM closure WHERE relation = NEW.relation;
 
@@ -968,13 +968,13 @@ BEGIN
 END;
 
 /* ---- 13.4 审计：写入变更日志 ---- */
-CREATE TRIGGER tr_relations_audit_ai AFTER INSERT ON relations BEGIN
+CREATE TRIGGER IF NOT EXISTS tr_relations_audit_ai AFTER INSERT ON relations BEGIN
     INSERT INTO changelog(table_name, record_id, operation, new_value)
     VALUES ('relations', NEW.relation_id, 'INSERT',
             json_object('src', NEW.src_id, 'relation', NEW.relation, 'dst', NEW.dst_id));
 END;
 
-CREATE TRIGGER tr_relations_audit_ad AFTER DELETE ON relations BEGIN
+CREATE TRIGGER IF NOT EXISTS tr_relations_audit_ad AFTER DELETE ON relations BEGIN
     INSERT INTO changelog(table_name, record_id, operation, old_value)
     VALUES ('relations', OLD.relation_id, 'DELETE',
             json_object('src', OLD.src_id, 'relation', OLD.relation, 'dst', OLD.dst_id));

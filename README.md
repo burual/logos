@@ -46,12 +46,18 @@
 ## 快速开始
 
 ```bash
-# 1) 建库 + 结构性自检（exit 0 表示全绿）
+# 1) 从零建库 + 结构性自检（exit 0 表示全绿）
 python apply_seeds.py
 
-# 2) 医学库全量校验（schema + 全部种子 + 医学子树）
+# 2) 往既有库增量叠加种子（跳过 schema，只重放 seed_*.sql；目标库须已存在且 schema 兼容）
+python apply_seeds.py logos.db --keep
+
+# 3) 医学库全量校验（schema + 全部种子 + 医学子树）
 python validate_medical.py
 ```
+
+> `--keep` 只补数据、不动结构：种子文件全部幂等（`ON CONFLICT DO NOTHING` / `WHERE NOT EXISTS`），
+> 可反复执行；但若改动过 `schema_v3.sql`，仍需用默认模式（不加 `--keep`）从零重建。
 
 建库产物（`logos.db` 等）不入版本控制 —— `clone` 后跑一次 `apply_seeds.py` 即可重建。
 
@@ -87,7 +93,7 @@ python validate_medical.py
 ├── seed_medical_v3_patch_symptom_layers.sql   # 疾病分层补丁
 ├── seed_medical_v3_patch_symptom_severity.sql # 症状严重度义素（纯标注，不新增词）
 │
-├── apply_seeds.py                             # 建库 + 结构自检
+├── apply_seeds.py                             # 建库 + 结构自检（--keep 增量叠加）
 ├── validate_schema.py                         # 表结构 / 约束 / 触发器
 ├── validate_seed.py                           # 通用种子
 ├── validate_connection.py                     # 连接层 / PRAGMA / 事务

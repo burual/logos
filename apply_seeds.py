@@ -35,9 +35,24 @@ seed_general 的「鱼」「吃」；影像子树依赖医学库建的「医学�
 
 用法
 ----
-    python apply_seeds.py                 # 建 ROOT/logos.db（已存在则先删除）
-    python apply_seeds.py path/to/x.db    # 自定义目标库
-    python apply_seeds.py --keep          # 保留已有库，做增量叠加（种子文件本身幂等）
+    python apply_seeds.py                      # 从零重建 ROOT/logos.db（已存在则先删旧库文件）
+    python apply_seeds.py path/to/x.db         # 从零重建到自定义目标库
+    python apply_seeds.py path/to/x.db --keep  # 增量叠加：跳过 schema，只重放 seed_*.sql
+    python apply_seeds.py --keep               # 同上，目标库取默认 logos.db
+
+两种模式
+--------
+1. **从零重建（默认）**：删除目标库文件 → 加载 `schema_v3.sql`（52 张 STRICT 表 /
+   2 张 FTS5 虚表 / 10 个触发器 / 34 个索引 / 5 个视图）→ 按文件名字典序加载全部
+   `seed_*.sql` → 结构自检。目标库若已存在，其内容会**先删后建**（既有行为，
+   保持向后兼容）。
+2. **增量叠加（`--keep`）**：**跳过 `schema_v3.sql`**，只重放 `seed_*.sql` → 结构自检。
+   - 要求目标库**已存在**，且由**兼容版本的 `schema_v3.sql`** 建出（缺少
+     `schema_meta` 表即判定不兼容），否则报错并以退出码 2 结束，不做任何写入。
+   - 种子文件全部幂等（`INSERT ... ON CONFLICT DO NOTHING` / `WHERE NOT EXISTS`），
+     可安全重复执行，用于往既有库补种新数据。
+   - **新增/修改表结构不能靠 `--keep` 生效** —— 它只补数据、不动结构。
+     若改过 `schema_v3.sql`，请用默认模式重建目标库，避免结构漂移。
 
 设计要点（三条，都是刻意的）
 ----------------------------
@@ -68,7 +83,8 @@ seed_general 的「鱼」「吃」；影像子树依赖医学库建的「医学�
 
 退出码
 ------
-    0 成功     1 建库成功但结构自检未全绿     2 路径错误     3 执行 SQL 出错     4 编码错误
+    0 成功     1 建库成功但结构自检未全绿
+    2 路径错误（含 `--keep` 目标库不存在 / 不兼容）     3 执行 SQL 出错     4 编码错误
 """
 
 from __future__ import annotations
@@ -86,10 +102,13 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parent
 DB_PATH = ROOT / "logos.db"
 
+#: schema 文件名 —— `--keep` 模式据此跳过 schema，只重放 `seed_*.sql`
+SCHEMA_FILENAME = "schema_v3.sql"
+
 # (显示名, 候选文件名) —— 依次尝试，命中第一个存在的。
 # 兼容两种工程布局：SQL 放在项目根目录（本仓库现状），或放在 ROOT/db/ 下。
 SQL_FILES = [
-    ("L1 Schema  ", ("schema_v3.sql",)),
+    ("L1 Schema  ", (SCHEMA_FILENAME,)),
     ("L2 Seed    ", ("seed_general_v3.sql",)),
     ("L2 Seed+   ", ("seed_general_v3_ext.sql",)),
     ("L2 SeedM   ", ("seed_medical_v3.sql",)),
@@ -760,7 +779,8 @@ def main(argv: list[str]) -> int:
     print("=" * 78)
     print(f"  项目根目录 : {ROOT}")
     print(f"  目标库     : {DB_PATH}")
-    print(f"  模式       : {'增量叠加（--keep，保留已有库）' if keep else '从零重建'}")
+    print(f"  模式       : "
+          f"{'增量叠加（--keep：跳过 schema，只重放 seed）' if keep else '从零重建（schema + seed）'}")
 
     # ---- 解析 SQL 路径（路径错误立刻退出，不进入写库阶段）----
     files: list[tuple[str, pathlib.Path]] = []
@@ -782,6 +802,20 @@ def main(argv: list[str]) -> int:
             return 2
         files.append((label, resolved))
 
+    if keep:
+        # 增量叠加：跳过 schema（表已存在；即便有 IF NOT EXISTS 也只是空转，跳过更快），
+        # 只重放 seed_*.sql。见模块 docstring「两种模式」。
+        files = [(label, p) for (label, p) in files if p.name != SCHEMA_FILENAME]
+        print(f"  --keep     : 跳过 {SCHEMA_FILENAME}，只重放 {len(files)} 份 seed 文件")
+
+        # 前置校验：目标库必须已存在。否则 sqlite3 会静默建一个空库，
+        # 直到种子加载期才报「表不存在」，对用户毫无指向性。
+        if not DB_PATH.exists():
+            print(f"\n[路径错误] --keep 需要已存在的数据库：{DB_PATH}")
+            print("  该文件不存在。请先用默认模式从零建库：")
+            print(f"      python {pathlib.Path(__file__).name} \"{DB_PATH}\"")
+            return 2
+
     # ---- 从零重建 ----
     if not keep:
         for suffix in ("", "-wal", "-shm"):
@@ -798,6 +832,15 @@ def main(argv: list[str]) -> int:
         conn = sqlite3.connect(str(DB_PATH), isolation_level=None)
         conn.execute("PRAGMA foreign_keys = ON")         # 连接后第一件事
         conn.execute("PRAGMA recursive_triggers = ON")   # 闭包触发器依赖级联
+
+        if keep and not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+        ).fetchone():
+            print(f"\n[路径错误] --keep 目标库缺少 schema_meta 表：{DB_PATH}")
+            print("  该库不是由兼容版本的 schema_v3.sql 建出的，无法增量叠加。")
+            print("  请用默认模式从零重建，或换一个正确的库文件。")
+            return 2
+
         mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
         print(f"  PRAGMA     : foreign_keys=ON  recursive_triggers=ON  journal_mode={mode}")
         print()
