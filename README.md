@@ -85,6 +85,7 @@ python validate_medical.py
 ├── GETTING_STARTED.md                         # ★ 使用说明书（克隆后先读这个）
 ├── schema_v3.sql                              # STRICT 表结构（52 表 / 10 触发器 / 34 索引 / 5 视图）
 │
+├── seed_animal_kingdom.sql                    # 动物分类 + 属性/部位/行为多跳闭包
 ├── seed_general_v3.sql                        # 通用领域种子
 ├── seed_general_v3_ext.sql                    # 通用扩展（营养物 / 分类骨架 / 量词）
 ├── seed_medical_v3.sql                        # 医学骨架
@@ -130,12 +131,16 @@ python validate_medical.py
 |--------|------|------|
 | 通用库 | ✅ | 基础词表 + 扩展分类骨架 + 量词 |
 | 医学库 | ✅ | 医学骨架 + **症状继承**（沿 `is_a` 闭包）+ **症状严重度**（`sense_features`）+ **影像特征子树** |
-| 动物库 | 🚧 | 规划中（当前仅有跨库链接节点） |
+| 动物库 | ✅ | 动物分类骨架 + **关系多样闭包**（80 义项 / 316 新关系 / 719 新闭包；`is_a` / `has_property` / `typically_has` / `can_do` / `part_of` / `opposite_of`） |
 
-### 两条推理链的现状
+### 推理链的现状
 
 - **症状继承（✅ 已实现）** —— 疾病的症状 = 直接声明 ∪ 沿 `is_a` 继承（`has_symptom` 不产生闭包，
   继承发生在 `is_a` 维度）。如 `癫痫` ⇒ 8 种症状 = 层边继承 5 + 直接边 3。
+- **动物关系闭包（✅ 基础版已实现）** —— `seed_animal_kingdom.sql` 用真实的同关系链打通
+  `has_property`、`typically_has`、`can_do`、`part_of` 的深度≥2 闭包，分别为
+  75 / 58 / 178 / 9 条；另有 `opposite_of` 7 条直接属性对立。闭包仍全部由触发器/队列派生，
+  无手工 `closure` INSERT。
 - **影像特征映射（🚧 设计完成，实现待补）** —— 设计文档与**符号词表**已就位：
   `seed_medical_v3_imaging.sql`（37 个义项 / 12 个义素 / 6 条 `typically_has`），
   符号侧的查询可用，如 `恶性结节` 典型特征 = {不规则形, 毛刺状, 高密度}（`typically_has`，confidence 0.8）。
@@ -151,11 +156,13 @@ python validate_medical.py
 
 ## 路线图（Roadmap / Planned）
 
-以下能力**尚未完整实现**（目前只有设计文档、符号词表或推理原型）：
+以下能力中，动物库基础扩展已落地；其余**尚未完整实现**（目前只有设计文档、符号词表或推理原型）：
 
+- **动物库领域扩展（✅ 基础版已完成）** —— 新增 80 个义项、316 条关系、719 条闭包，
+  覆盖 `is_a`、`has_property`、`typically_has`、`can_do`、`part_of`、`opposite_of` 六类关系；
+  后续可继续补生态、行为细节与更多物种。
 - **影像管线 Layer 2 ML 映射器** —— SVM / 随机森林 → 符号特征；Layer 1 的 CNN 检测同样待补。
   已有成果为符号词表与设计文档（`seed_medical_v3_imaging.sql`、`docs/MEDICAL_LIB_DESIGN.md` §13）。
-- **动物库领域扩展** —— 目前只预留了跨库链接节点，领域子树尚未建立。
 - **Logos Transformer** —— 基于关系图的注意力推理（relational graph attention）。设计见
   [docs/LOGOS_TRANSFORMER_DESIGN.md](docs/LOGOS_TRANSFORMER_DESIGN.md)；`logos_transformer/` 下已有
   可运行原型（随机权重、推理-only）与首个**闭包预测训练实验**（`train_closure.py`，见设计文档 §9）；

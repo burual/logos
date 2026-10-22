@@ -4,9 +4,10 @@
 
 用途
 ----
-从零把八份 SQL 铺进一个 SQLite 文件库，并在结束时做一次**结构性自检**：
+从零把九份 SQL 铺进一个 SQLite 文件库，并在结束时做一次**结构性自检**：
 
     L1 Schema      schema_v3.sql               52 STRICT 表 / 5 视图 / 10 触发器
+    L2 SeedA       seed_animal_kingdom.sql     动物分类骨架 + 关系多样闭包
     L2 Seed        seed_general_v3.sql         通用领域种子（猫吃鱼及其扩展句式）
     L2 Seed+       seed_general_v3_ext.sql     鱼的多继承 + 抽象/人造物分类骨架
     L2 SeedM       seed_medical_v3.sql         医学通用骨架 + 跨库领域链接
@@ -32,6 +33,9 @@ seed_general 的「鱼」「吃」；影像子树依赖医学库建的「医学�
   · 两份 symptom 补丁之间：'l'(0x6C, layers) < 's'(0x73, severity)，位置自由；
   · 若有人把严重度补丁改名为 `..._patch_severity.sql`，'severity' 的 'e' 会排在
     'symptom' 的 'y' 之前，从而在被依赖的症状义项尚未建立时执行、静默丢 8 行。
+  · `seed_animal_kingdom.sql` 的 'a' 排在 `seed_general_v3.sql` 的 'g' 之前；
+    它自带「生物」兜底，并全部用 (word, pos) 自然键引用「猫 / 鱼 / 动物 / 生物」，
+    所以先加载不会断链，后续 general 再插入同名行时由 ON CONFLICT 吸收。
 
 用法
 ----
@@ -65,7 +69,7 @@ seed_general 的「鱼」「吃」；影像子树依赖医学库建的「医学�
    （体内的分号不会误切）—— 这一点在本项目的 docs/CONNECTION_LAYER.md 里已实测确认。
 
 2. **连接用 isolation_level=None（自动提交），事务交给 SQL 文件自己管**
-   八份 SQL 文件都自带 `BEGIN; ... COMMIT;`。若沿用 python
+   九份 SQL 文件都自带 `BEGIN; ... COMMIT;`。若沿用 python
    sqlite3 默认的隐式事务管理，显式 `BEGIN;` 会与驱动自动开启的事务撞车
    （"cannot start a transaction within a transaction"）。设为 None 后，
    事务边界完全由文件里的 BEGIN/COMMIT 决定，`conn.in_transaction` 也随之成为
@@ -109,6 +113,7 @@ SCHEMA_FILENAME = "schema_v3.sql"
 # 兼容两种工程布局：SQL 放在项目根目录（本仓库现状），或放在 ROOT/db/ 下。
 SQL_FILES = [
     ("L1 Schema  ", (SCHEMA_FILENAME,)),
+    ("L2 SeedA   ", ("seed_animal_kingdom.sql",)),                    # 动物分类 + 多关系闭包（先于 general 的字典序）
     ("L2 Seed    ", ("seed_general_v3.sql",)),
     ("L2 Seed+   ", ("seed_general_v3_ext.sql",)),
     ("L2 SeedM   ", ("seed_medical_v3.sql",)),
@@ -121,9 +126,9 @@ SEARCH_DIRS = (ROOT, ROOT / "db", ROOT / "sql", ROOT / "database")
 
 # 自检期望值（来自种子文件头的实测值；不一致只算 FAIL 项，不影响建库完成）
 EXPECT = {
-    "senses_after_all": 170,     # 27 + 27 + 39 + medical 31 + imaging 37 + patch 6 + layers 3
-    "relations_after_all": 166,  # 23 + 38 + medical 40 + imaging 46 + patch 11 + layers 8
-    "closure_after_all": 371,    # 全部由触发器派生（八份文件均无手工 closure INSERT）
+    "senses_after_all": 250,     # 原 170 + 动物库 80（5001-5080）
+    "relations_after_all": 482,  # 原 166 + 动物库 316 条去重后新边
+    "closure_after_all": 1090,   # 全部由触发器 / 队列重建派生（九份文件均无手工 closure INSERT）
     # 只写义素表的两个补丁：severity 8 行 / imaging 12 行
     "sense_features_after_all": 98,      # 六份文件后 78 + severity 8 + imaging 12
     "semantic_features_after_all": 22,   # schema 7 + severity 3 + imaging 12
@@ -588,7 +593,7 @@ def selfcheck(conn: sqlite3.Connection) -> int:
     ck("收尾无未闭合事务（SQL 文件 BEGIN/COMMIT 配对）",
        conn.in_transaction is False, "in_transaction=True —— 缺 COMMIT")
 
-    # --- 八份文件都进去了 ---
+    # --- 九份文件都进去了 ---
     n_senses, n_rel, n_clo = (one("SELECT COUNT(*) FROM senses"),
                               one("SELECT COUNT(*) FROM relations"),
                               one("SELECT COUNT(*) FROM closure"))
@@ -610,9 +615,9 @@ def selfcheck(conn: sqlite3.Connection) -> int:
     ck("鱼的上位链 = 动物/食物/生物/营养物（DAG 多继承）",
        {sid("动物", "n"), sid("食物", "n"), sid("生物", "n"), sid("营养物", "n")} <= anc,
        f"实测 {sorted(anc)}")
-    ck("鱼的 is_a 出边 = 2（动物 / 食物）",
+    ck("鱼的 is_a 出边 ≥ 2（动物 / 食物 / 鲤科；DAG 多继承）",
        one("SELECT COUNT(*) FROM relations WHERE src_kind='sense' AND src_id=? "
-           "AND relation='is_a'", (sid("鱼", "n"),)) == 2)
+           "AND relation='is_a'", (sid("鱼", "n"),)) >= 2)
     props = {r[0] for r in conn.execute(
         "SELECT wn.word FROM relations r JOIN senses s ON s.sense_id=r.dst_id "
         "JOIN words wn ON wn.word_id=s.word_id "
@@ -653,7 +658,7 @@ def selfcheck(conn: sqlite3.Connection) -> int:
     ck("视图 / 文档 / 程序 均已配量词", {"个", "份"} <= nc, f"实测 {nc}")
 
     # --- 医学库（seed_medical_v3.sql）---
-    # 不重复 validate_medical.py 的细查，这里只验"七份 SQL 合起来形状还对"。
+    # 不重复 validate_medical.py 的细查，这里只验"九份 SQL 合起来形状还对"。
     ck("医学概念 ⊑ 抽象概念（医学树挂到 ext 的抽象概念下）",
        bool(one("SELECT COUNT(*) FROM closure WHERE relation='is_a' AND ancestor=? "
                 "AND descendant=?", (sid("抽象概念", "n"), sid("医学概念", "n")))))
@@ -746,14 +751,14 @@ def selfcheck(conn: sqlite3.Connection) -> int:
            (sid("病理结构", "n"), sid("结节", "n"))) == 1
        and one("SELECT COUNT(*) FROM closure WHERE relation='is_a' AND ancestor=?",
                (sid("结节", "n"),)) == 2)
-    ck("typically_has 六条边 + 逆类型 typical_of 成对登记",
-       one("SELECT COUNT(*) FROM relations WHERE relation='typically_has'") == 6
+    ck("typically_has 边 + 逆类型 typical_of 成对登记（动物库提升为可传递）",
+       one("SELECT COUNT(*) FROM relations WHERE relation='typically_has'") >= 6
        and one("SELECT COUNT(*) FROM relation_types WHERE relation='typically_has' "
-               "AND inverse_of='typical_of' AND is_transitive=0") == 1
+               "AND inverse_of='typical_of' AND is_transitive=1") == 1
        and one("SELECT COUNT(*) FROM relation_types WHERE relation='typical_of' "
                "AND inverse_of='typically_has'") == 1)
-    ck("typically_has 零闭包 / has_property 派生 2 行闭包（is_transitive 语义差异的真实行为）",
-       one("SELECT COUNT(*) FROM closure WHERE relation='typically_has'") == 0
+    ck("typically_has 深度≥2 闭包 ≥20 / has_property 派生 2 行闭包",
+       one("SELECT COUNT(*) FROM closure WHERE relation='typically_has' AND depth>=2") >= 20
        and one("SELECT COUNT(*) FROM closure WHERE relation='has_property' AND descendant=?",
                (sid("结节", "n"),)) == 2)
     ck("影像义素 = 12 行（形状/边缘/大小各 4）",

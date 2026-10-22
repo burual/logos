@@ -4,7 +4,7 @@
 > **代码**：`logos_transformer/prototype_gat.py`（推理）、`logos_transformer/train_closure.py`（训练）
 > **依赖**：`torch`（纯 PyTorch 实现，**不依赖** PyTorch Geometric）
 > **文档版本**：v0.1（2026-10）
-> **适用数据库**：`schema_v3.sql` 建出的 `logos.db`（170 义项 / 161 条义项级关系 / 45 种关系类型 / 371 条闭包）
+> **适用数据库**：`schema_v3.sql` 建出的 `logos.db`（当前全量 250 义项 / 477 条义项级关系 / 46 种关系类型 / 1090 条闭包；§9 的 W_r 实验基于动物库扩展前的 170 / 161 / 45 / 371 快照）
 
 ---
 

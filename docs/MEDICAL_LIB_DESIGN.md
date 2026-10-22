@@ -314,6 +314,13 @@ M12.7 幂等与闸门（7 项）二次执行零漂移 / PRAGMA 在 BEGIN 前 / �
 > 之后加入的影像子树（`seed_medical_v3_imaging.sql`）不改动上述任何口径 ——
 > 它挂在 `医学概念` 下新开一条分支，与症状 / 疾病体系**无交集**（见 §13）。
 > 它把总量推到 `senses=170 / relations=166 / closure=371`，自检 31 → **38** 项。
+>
+> **动物库扩展后的口径**：上述 170 / 166 / 371 是「schema + 医学种子」的
+> 医学专用口径。全量加入 `seed_animal_kingdom.sql` 后，库为
+> `senses=250 / relations=482 / closure=1090`（动物库贡献 80 / 316 / 719）；
+> 动物库把 `typically_has` 提升为 `is_transitive=1`，因此全量库中医学影像的
+> 6 条 `typically_has` 也会产生 `depth=1` 闭包；只加载医学种子时仍为 0。
+> 详见 README「领域库状态」与 `seed_animal_kingdom.sql` 文件头。
 
 ---
 
@@ -766,6 +773,13 @@ Layer 3  推理      Logos 符号引擎
 | `has_property` | **1**（schema §14 登记） | incremental / 12 | **2** |
 | `typically_has`（新） | **0** | 无（也不需要） | **0** |
 | `domain_specialization` | 0 | 无 | 0 |
+
+> **动物库例外（全量库口径）**：`seed_animal_kingdom.sql` 为了得到
+> 「动物 → 身体部位 → 具体部件」的深度≥2 闭包，会把 `typically_has`
+> 提升为 `is_transitive=1` 并补 `closure_policy(incremental, 12)`。
+> 因此全量库中本节的 6 条 `typically_has` 也会产生 `depth=1` 闭包，
+> `apply_seeds.py` 的对应断言已同步为「深度≥2 闭包 ≥20」。
+> 只加载医学种子（`validate_medical.py`）时仍严格保持上表的 0 闭包。
 
 `has_property` 在 schema 里本来就是可传递 + 增量物化的（`食物 has_property 可食用`
 就是这么用的），故 `结节 has_property 形态学特征/密度特征` **必然**派生 2 行闭包。
