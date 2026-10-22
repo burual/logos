@@ -62,3 +62,6 @@ Desktop.ini
 
 logos_transformer/checkpoints/
 
+
+logos_transformer/checkpoints_disjoint/
+

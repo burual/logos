@@ -1,6 +1,6 @@
 # Logos Transformer —— 关系图注意力推理模块设计
 
-> **状态**：设计完成 + 最小可运行原型 + 首个闭包预测训练实验（见 §9）
+> **状态**：设计完成 + 最小可运行原型 + 闭包预测训练与源分离验证（见 §9）
 > **代码**：`logos_transformer/prototype_gat.py`（推理）、`logos_transformer/train_closure.py`（训练）
 > **依赖**：`torch`（纯 PyTorch 实现，**不依赖** PyTorch Geometric）
 > **文档版本**：v0.1（2026-10）
@@ -492,7 +492,9 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 打分头**与关系类型无关**（共享一个 `W`）；关系仅用于分层划分、分组指标与负采样。
 这是本实验最明显的简化，关系条件化的 `W_r` 是下一步。
 
-### 9.3 实测结果
+### 9.3 实测结果（随机划分）
+
+> 下表是**按 pair 随机划分**的结果，存在同 source 跨 split 的泄漏；源分离复测见 §9.8。
 
 运行：`python logos_transformer/train_closure.py`（best epoch 40，第 60 epoch 早停，val loss 0.0811）。
 
@@ -554,10 +556,11 @@ Top-5 多跳目标（隐藏了 1 跳邻居）：
 
 ### 9.6 结论与限制
 
-- **可行**：只看 1 跳消息，模型能把多跳闭包目标排到很前（MRR 0.766、Hits@3 0.917）。
+- **可行**：只看 1 跳消息，模型能把多跳闭包目标排到很前（随机划分 MRR 0.766、Hits@3 0.917；源分离后 MRR 0.569，见 §9.8）。
 - **高 AUC 有水份**：划分按关系分层，同一 source 常同时出现在 train 与 test（**pair completion，
   而非冷启动 source**）；再加上 transductive 节点嵌入，AUC 偏高可以预期。诚实的压力测试是
-  **按 source 划分**（留出整个词），本实验尚未做。
+  **按 source 划分**（留出整个词），已在 §9.8 补做；MRR 下降 0.197，但 train ≈ test，
+  说明随机划分的虚高很可能主要来自 source 泄漏。
 - **头与关系无关**，`has_part` 仅 1 个正样本，长尾关系完全没有评估。
 - **Precision@K 低**：每个 query 在 170 候选里通常只有 1–2 个真目标，`P@10` 上限本就 ≈0.1；
   排序类指标（MRR/Hits）更有信息量。
@@ -586,6 +589,38 @@ python logos_transformer/train_closure.py                 # 完整训练
 
 失败模式：无 torch → `Requires torch. Install with: pip install torch`，退出 1；
 无 DB → 明确提示，退出 1；无闭包数据 → `No closure data found, run apply_seeds.py first`，退出 1。
+
+### 9.8 源分离验证（source-disjoint, 2026-10）
+
+为排除同一 source 跨 split 的 transductive 泄漏，新增 `train_closure_disjoint.py`：
+按 **source sense** 做 70/15/15 划分（101 → 71 / 15 / 15），闭包边跟随其 source，
+负样本也只由本 split 的 source 生成；test source 不参与训练或早停。
+
+| 指标 | 随机划分（§9.3） | 源分离（§9.8） |
+|---|---|---|
+| Test ROC-AUC | 0.9969 | 1.0000 |
+| Test MRR | 0.7656 | **0.5690** |
+| Hits@1 | 0.6389 | **0.3571** |
+| Hits@10 | 0.9722 | 1.0000 |
+
+- train / val / test 的 MRR 分别为 0.5555 / 0.5389 / 0.5690：**train ≈ test**，
+  说明模型没有依赖 source 记忆；随机划分的 0.766 与 source 泄漏造成的虚高一致。
+- AUC 对"随机闭包无关负样本"已经饱和（全候选 hard AUC 0.9944），不能单独作为
+  "学会关系结构"的证据。更关键的是：一个**与 source 无关的目标先验**（按目标平均
+  得分排序）即可达到 test MRR 0.5259，约为逐 source MRR 的 92%。当前模型主要学到
+  "哪些节点像祖先"，源条件化的关系信号只占很小一部分。
+- 深度衰减明显：depth2 MRR 0.7667 / Hits@1 0.6667；depth3 0.4000 / 0.0；
+  depth4 0.3000 / 0.0；depth5 0.1667 / 0.0（Hits@10 均为 1.0）。这符合 2 层 GAT
+  只有 2 跳感受野的预期。
+
+**结论**：源分离消除了泄漏，模型对未见 source 不崩溃（Hits@10 = 1.0），但
+"学会了多跳关系推理"目前**不能**被证实——大部分排序来自目标先验，且 depth≥3
+没有 top-1 命中。下一步应使用**硬负样本**（其他 source 的同关系、同深度闭包目标）
+重跑，用"模型 vs 目标先验"的差距衡量真正的源条件化能力。完整对比与建议见
+[`SOURCE_DISJOINT_COMPARISON.md`](../SOURCE_DISJOINT_COMPARISON.md)。
+
+产物：`logos_transformer/checkpoints_disjoint/closure_gat_disjoint_best.pt` +
+`training_report.txt`。
 
 ---
 
