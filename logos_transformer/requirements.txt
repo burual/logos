@@ -7,4 +7,5 @@
 # torch-scatter / torch-sparse, which often require a matching compiler
 # toolchain on Windows.  If a future version switches to PyG, add:
 #   torch_geometric>=2.4
+# train_closure.py (closure-prediction training) uses the same dependency set.
 torch>=2.0

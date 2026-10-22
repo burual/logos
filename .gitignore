@@ -59,3 +59,6 @@ Desktop.ini
 # 刻意**不**忽略（协作价值）：
 #   .workbuddy/memory/   —— 项目长期约定与设计决策日志
 # ============================================================
+
+logos_transformer/checkpoints/
+

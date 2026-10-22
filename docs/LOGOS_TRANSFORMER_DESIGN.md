@@ -1,7 +1,7 @@
 # Logos Transformer —— 关系图注意力推理模块设计
 
-> **状态**：设计完成 + 最小可运行原型（**推理-only，不训练**）
-> **代码**：`logos_transformer/prototype_gat.py`
+> **状态**：设计完成 + 最小可运行原型 + 首个闭包预测训练实验（见 §9）
+> **代码**：`logos_transformer/prototype_gat.py`（推理）、`logos_transformer/train_closure.py`（训练）
 > **依赖**：`torch`（纯 PyTorch 实现，**不依赖** PyTorch Geometric）
 > **文档版本**：v0.1（2026-10）
 > **适用数据库**：`schema_v3.sql` 建出的 `logos.db`（170 义项 / 161 条义项级关系 / 45 种关系类型 / 371 条闭包）
@@ -23,7 +23,7 @@ Logos Transformer 的定位是**符号层的候选生成器**，不是替代品�
 | ✅ | 置信度回写 | 候选带 `confidence`，写入独立表 `inferred_relations`，供人工/规则复核 |
 | ✅ | 与闭包共存 | 推断结果**不触发**闭包计算，不污染事实层 |
 | ❌ | 替代闭包 | 精确的传递闭包仍然由 SQL 触发器负责 |
-| ❌ | 生产级训练 | 本版**不做训练**，随机权重只为验证管线可跑通 |
+| ❌ | 生产级训练 | 本版只做**闭包预测的小规模监督实验**（§9），不做部署级训练 |
 | ❌ | 端到端问答 | 自然语言接口属于后续里程碑 |
 
 一句话：**闭包回答"确定是什么"，Transformer 提示"可能还有什么"。**
@@ -397,10 +397,10 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 | 评估 | MRR、Hits@1/3/10，按 relation 分组（`is_a` vs 其他） |
 | 基线 | (a) 随机；(b) 度数启发式；(c) 仅闭包 |
 
-### 5.4 本版明确不做
+### 5.4 实现状态
 
-- 不写训练循环、不做数据集划分、不保存 checkpoint。
-- 原型内所有参数随机初始化，`model.eval()` + `torch.no_grad()` 前向一次即结束。
+- 训练循环、数据集划分、checkpoint 保存已在 `logos_transformer/train_closure.py` 实现，训练目标为**闭包预测**（见 §9）。
+- 本节其余建议（掩码关系恢复、AdamW + weight_decay、按深度划分、查询级负采样）**尚未实现**，仍作为后续方向。
 
 ---
 
@@ -445,11 +445,147 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **M0** | 设计文档 + 随机权重 GAT 原型 + 注意力报告 | ✅ 本次交付 |
-| M1 | 掩码关系恢复训练；MRR/Hits@k；与闭包基线对比 | ⬜ |
+| M1 | 掩码关系恢复训练；MRR/Hits@k；与闭包基线对比 | 🚧 闭包预测已完成（§9）；掩码关系恢复待做 |
 | M2 | `inferred_relations` 迁移 + `query.py --write` + 复核流程 | ⬜ |
 | M3 | 与查询规划器集成：先查闭包，未命中再问 Transformer | ⬜ |
 | M4 | 异构扩展（`entity_nodes`）与释义级节点特征 | ⬜ |
 | M5 | 自然语言接口（见 README Roadmap） | ⬜ |
+
+---
+
+## 9. 训练实验：闭包预测（closure prediction）
+
+首个监督实验，验证"只看 1 跳消息，能否预测 depth≥2 的隐式多跳关系"。
+实现：`logos_transformer/train_closure.py`（**不修改** `prototype_gat.py`）。
+
+### 9.1 任务与数据
+
+- **标签**：`closure` 中 `depth >= 2` 的行，口径为 `descendant --R--> ancestor`（§1.3），
+  正样本即 `(descendant, ancestor, relation)`。
+- **输入**：仅 1 跳语义边（`include_closure=False`），闭包**不进消息图**，避免标签泄漏。
+- **负样本**：对每个正样本，从"与源节点既无直接边、也无任何闭包路径（双向）"的节点中
+  随机采样 3 个；按 `(src, dst)` 去重。负样本继承其正样本的关系类型，便于分层与分组指标。
+
+| 项目 | 数量 |
+|---|---|
+| 正样本 | 241（`is_a` 240 + `has_part` 1） |
+| 深度分布 | depth2 103 / depth3 76 / depth4 48 / depth5 13 / depth6 1 |
+| 负样本（3× 采样，去重后） | 712 |
+| 样本总数 | 953 |
+| 划分（按关系分层，70/15/15） | train 667 / val 143 / test 143 |
+| 训练集类别 | 169 正 / 498 负（`pos_weight=2.95`） |
+
+> `has_part` 只有 1 个正样本，全部落在 train；因此 **val/test 的正样本全部是 `is_a`**。
+
+### 9.2 模型与超参数
+
+在原型 GAT 之后接双线性打分头 `σ(h_s^T W h_t)`（`W` 无 bias），整体端到端训练。
+
+| 项 | 值 |
+|---|---|
+| 编码器 | 2 层关系感知 GAT，4 头，hidden=32，dropout=0.1（203K 参数） |
+| 预测头 | `h_s^T W h_t`，`W` 为 32×32，Xavier 初始化 |
+| 损失 | `BCEWithLogitsLoss(pos_weight=2.95)` |
+| 优化器 | Adam lr=1e-3 + `ReduceLROnPlateau(factor=0.5, patience=10)` |
+| batch / epochs | 64 / 最多 200，早停 patience=20，seed=42 |
+
+打分头**与关系类型无关**（共享一个 `W`）；关系仅用于分层划分、分组指标与负采样。
+这是本实验最明显的简化，关系条件化的 `W_r` 是下一步。
+
+### 9.3 实测结果
+
+运行：`python logos_transformer/train_closure.py`（best epoch 40，第 60 epoch 早停，val loss 0.0811）。
+
+| 指标 | 值 |
+|---|---|
+| Test BCE / accuracy | 0.1444 / 0.9720 |
+| ROC-AUC | **0.9969** |
+| Precision@10（过滤全库，按 query） | 0.1167 |
+| Precision@20（过滤全库，按 query） | 0.0600 |
+| MRR（逐正样本，过滤全库 170 候选） | **0.7656** |
+| MRR（按 query 取首个命中） | 0.8583 |
+| Hits@1 / @3 / @10 | 0.6389 / 0.9167 / 0.9722 |
+| 查询数（source×relation） | 30 |
+
+按闭包深度拆分（过滤全库排序）：
+
+| depth | n | MRR | Hits@1 | Hits@10 |
+|---|---|---|---|---|
+| 2 | 17 | 0.7353 | 0.5882 | 1.0000 |
+| 3 | 12 | 0.8247 | 0.7500 | 0.9167 |
+| 4 | 4 | 0.7083 | 0.5000 | 1.0000 |
+| 5 | 3 | 0.7778 | 0.6667 | 1.0000 |
+
+depth=6 的唯一正样本落在 train，test 无该深度样本。**深度 4/5 仍有命中**，说明指标并非只靠
+1–2 跳；但因 2 层 GAT 的感受野只有 2 跳，这部分更多来自结构与节点嵌入，而非消息传递。
+
+### 9.4 注意力是否发生位移
+
+第 1 层注意力（4 头均值）的平均归一化熵：
+
+| | 熵（1.000 = 均匀，越低越集中） |
+|---|---|
+| 训练前（随机权重） | 0.9997 |
+| 训练后 | **0.9930** |
+
+「猫」的入边注意力 Top-3：
+
+| 训练前 | 训练后 |
+|---|---|
+| (self) 0.2061 / 动物 is_a 0.2021 / 跑 can_do 0.1987 | 吃 can_do 0.2427 / 抓 can_do 0.2368 / 跑 can_do 0.2130 |
+
+训练后自环与 `is_a 动物` 让位给 `can_do` 出边，注意力**确实发生了位移**且更集中。
+注意：注意力 ≠ 因果解释，这里只报告分布变化。
+
+### 9.5 定性样例（「猫」= sense 2）
+
+Top-5 多跳目标（隐藏了 1 跳邻居）：
+
+| 排名 | 目标 | 分数 | 闭包匹配 |
+|---|---|---|---|
+| 1 | 生物(1026) | 1.0000 | ✅ `is_a`, depth 2 |
+| 2 | 抽象概念(2101) | 1.0000 | — |
+| 3 | 医学概念(4001) | 1.0000 | — |
+| 4 | 营养物(2001) | 0.9999 | — |
+| 5 | 脑(4004) | 0.9997 | — |
+
+猫的唯一闭包目标「生物」被排到 **#1**；第 2–5 名是结构上相似但库中未断言关系的概念，
+正符合"候选生成器"的定位（低精度、高召回，交给复核）。
+
+### 9.6 结论与限制
+
+- **可行**：只看 1 跳消息，模型能把多跳闭包目标排到很前（MRR 0.766、Hits@3 0.917）。
+- **高 AUC 有水份**：划分按关系分层，同一 source 常同时出现在 train 与 test（**pair completion，
+  而非冷启动 source**）；再加上 transductive 节点嵌入，AUC 偏高可以预期。诚实的压力测试是
+  **按 source 划分**（留出整个词），本实验尚未做。
+- **头与关系无关**，`has_part` 仅 1 个正样本，长尾关系完全没有评估。
+- **Precision@K 低**：每个 query 在 170 候选里通常只有 1–2 个真目标，`P@10` 上限本就 ≈0.1；
+  排序类指标（MRR/Hits）更有信息量。
+- 模型是 **transductive** 的：节点嵌入按 `sense_id` 学习，checkpoint 只能在**同一节点顺序**下加载。
+
+**数据扩充建议**（当前仅 241 个正样本、953 个样本对，规模偏小）：
+
+1. 为可逆/对称关系增加逆向关系类型，把反向边也作为正样本；
+2. 扩充动物库（同域节点与 1 跳边），提升 depth≥2 闭包的绝对数量；
+3. 用 **source-disjoint** 划分替代当前分层划分，单独报告冷启动能力；
+4. 只保留 depth=2 做公平的 2 跳任务，或改用 k-fold 交叉验证降低单次划分的方差。
+
+### 9.7 产物与复现
+
+```bash
+python logos_transformer/train_closure.py --epochs 5      # 冒烟测试
+python logos_transformer/train_closure.py                 # 完整训练
+# CLI: --db --epochs --lr --hidden --heads --layers --batch-size \
+#      --output-dir --neg-ratio --patience --seed
+```
+
+| 产物 | 路径 |
+|---|---|
+| 最优权重（`state_dict`） | `logos_transformer/checkpoints/closure_gat_best.pt` |
+| 训练报告（指标 / 注意力 / 定性 / 限制） | `logos_transformer/checkpoints/training_report.txt` |
+
+失败模式：无 torch → `Requires torch. Install with: pip install torch`，退出 1；
+无 DB → 明确提示，退出 1；无闭包数据 → `No closure data found, run apply_seeds.py first`，退出 1。
 
 ---
 

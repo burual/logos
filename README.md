@@ -158,7 +158,8 @@ python validate_medical.py
 - **动物库领域扩展** —— 目前只预留了跨库链接节点，领域子树尚未建立。
 - **Logos Transformer** —— 基于关系图的注意力推理（relational graph attention）。设计见
   [docs/LOGOS_TRANSFORMER_DESIGN.md](docs/LOGOS_TRANSFORMER_DESIGN.md)；`logos_transformer/` 下已有
-  可运行原型（随机权重、推理-only，训练与符号层回写尚未实现）。
+  可运行原型（随机权重、推理-only）与首个**闭包预测训练实验**（`train_closure.py`，见设计文档 §9）；
+  符号层回写（`inferred_relations`）与查询集成尚未实现。
 - **自然语言接口** —— 面向终端用户的自然语言问答 / 写作入口。
 
 ## 许可证
