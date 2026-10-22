@@ -151,12 +151,14 @@ python validate_medical.py
 
 ## 路线图（Roadmap / Planned）
 
-以下能力**尚未实现**（当前仓库只有设计文档或符号词表，没有对应代码模块）：
+以下能力**尚未完整实现**（目前只有设计文档、符号词表或推理原型）：
 
 - **影像管线 Layer 2 ML 映射器** —— SVM / 随机森林 → 符号特征；Layer 1 的 CNN 检测同样待补。
   已有成果为符号词表与设计文档（`seed_medical_v3_imaging.sql`、`docs/MEDICAL_LIB_DESIGN.md` §13）。
 - **动物库领域扩展** —— 目前只预留了跨库链接节点，领域子树尚未建立。
-- **Logos Transformer** —— 基于关系图的注意力推理（relational graph attention）。
+- **Logos Transformer** —— 基于关系图的注意力推理（relational graph attention）。设计见
+  [docs/LOGOS_TRANSFORMER_DESIGN.md](docs/LOGOS_TRANSFORMER_DESIGN.md)；`logos_transformer/` 下已有
+  可运行原型（随机权重、推理-only，训练与符号层回写尚未实现）。
 - **自然语言接口** —— 面向终端用户的自然语言问答 / 写作入口。
 
 ## 许可证
