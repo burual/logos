@@ -609,18 +609,68 @@ python logos_transformer/train_closure.py                 # 完整训练
   "学会关系结构"的证据。更关键的是：一个**与 source 无关的目标先验**（按目标平均
   得分排序）即可达到 test MRR 0.5259，约为逐 source MRR 的 92%。当前模型主要学到
   "哪些节点像祖先"，源条件化的关系信号只占很小一部分。
-- 深度衰减明显：depth2 MRR 0.7667 / Hits@1 0.6667；depth3 0.4000 / 0.0；
-  depth4 0.3000 / 0.0；depth5 0.1667 / 0.0（Hits@10 均为 1.0）。这符合 2 层 GAT
-  只有 2 跳感受野的预期。
+- ~~深度衰减明显：depth2 MRR 0.7667 / Hits@1 0.6667；depth3 0.4000 / 0.0；
+  depth4 0.3000 / 0.0；depth5 0.1667 / 0.0。~~ **2026-10-22 更正**：该 by-depth
+  视图受 `filtered_metrics` 的 rank/depth 对齐 bug 影响（总体 MRR 不受影响）。
+  按逐正样本重算：depth2 0.5022 / 0.2667；depth3 0.5500 / 0.3750；
+  depth4 0.6667 / 0.3333；depth5 1.0000 / 1.0000（Hits@10 均为 1.0）。
+  因此**没有**简单的深度衰减，depth≥3 仍有 top-1 命中；depth4/5 的 n=3/2，
+  不应过度解读。
 
 **结论**：源分离消除了泄漏，模型对未见 source 不崩溃（Hits@10 = 1.0），但
-"学会了多跳关系推理"目前**不能**被证实——大部分排序来自目标先验，且 depth≥3
-没有 top-1 命中。下一步应使用**硬负样本**（其他 source 的同关系、同深度闭包目标）
-重跑，用"模型 vs 目标先验"的差距衡量真正的源条件化能力。完整对比与建议见
+"学会了多跳关系推理"目前**不能**被证实——大部分排序来自目标先验（0.5259 /
+0.5690 ≈ 92%）。更正后的 per-depth 并没有简单的深度衰减，depth≥3 仍有 top-1
+命中，但 depth4/5 的样本量只有 3/2。下一步应使用**硬负样本**（其他 source 的
+同关系、同深度闭包目标）重跑，用"模型 vs 目标先验"的差距衡量真正的源条件化
+能力。完整对比与建议见
 [`SOURCE_DISJOINT_COMPARISON.md`](../SOURCE_DISJOINT_COMPARISON.md)。
 
 产物：`logos_transformer/checkpoints_disjoint/closure_gat_disjoint_best.pt` +
 `training_report.txt`。
+
+### 9.9 硬负样本训练（hard negatives, 2026-10）
+
+§9.8 的结论是：随机负样本太容易，目标先验已解释约 92% 的 MRR。为验证模型能否
+真正利用 source，新增 `train_closure_hardneg.py`：保持同一 source-disjoint 划分、
+模型与超参数，将负样本分为三档：
+
+- **hard**：其他 source 的同 relation、同深度带（2 / 3 / 4+）闭包目标，且从
+  query source 不可达（direct/closure 双向排除）；
+- **medium**：同 relation、其他深度带，同样排除可达目标；
+- **easy**：随机节点。
+
+默认每正样本 6 个负样本 = 3 hard / 2 medium / 1 easy。hard 池不足时按
+hard → medium → easy 回退，并在报告中记录 shortfall。每个 epoch 在 **val**
+positive 上计算 hard-neg MRR、目标先验 MRR 与 margin，并与 loss 同列打印。
+
+| 指标 | 随机划分 | 源分离 | 硬负样本 |
+|---|---:|---:|---:|
+| Test MRR | 0.7656 | 0.5690 | **0.6404** |
+| Hits@1 | 0.6389 | 0.3571 | **0.4643** |
+| Hits@10 | 0.9722 | 1.0000 | 0.9643 |
+| Hard-neg MRR | — | 0.7411 | **0.9714** |
+| Hard-neg margin | — | +0.0407 | **+0.2292** |
+| Full-catalogue margin | — | +0.0431 | **+0.1619** |
+
+- 两个要求阈值（hard-neg MRR > 0.3、margin > 0.1）在点估计上通过；配对
+  source-cluster bootstrap（15 test sources, 10k）显示 hardMRR 提升
+  +0.2294 [+0.1068, +0.3694]、hard-pool margin 提升 +0.1904 [+0.0599, +0.3582]、
+  full-catalogue margin 提升 +0.1211 [+0.0330, +0.2444]，均显著。
+- 但绝对 full-catalogue MRR 提升 +0.0737 [−0.0025, +0.1824]，不显著；
+  Hits@10 从 1.0 降到 0.9643（`人→生物` full rank #22）；`猫→生物` 从 #3 降到
+  #13。绝对 hard-pool margin 的 95% CI 为 [+0.0814, +0.4285]，下界略低于 0.1。
+- hard 池天然很小：`is_a` 在 depth2/3/4+ 只有 14/6/3 个不同目标；22/180 train、
+  1/33 val、0/28 test 的 hard 池为空。hard 负样本主要是**跨分支 hub**
+  （动物 source 的池里是 `人造物` / `医学概念` / `病理状态`，而不是另一个动物
+  祖先），所以模型学到的是较粗的"分支归属"，不是同分支内的细粒度祖先排序。
+- 结论：硬负样本训练**显著增强 source 条件化信号**并降低对目标先验的依赖，
+  但不是全面的多跳排序提升；细粒度推理仍受数据多样性限制。下一步：扩充动物
+  库 / 同分支祖先、target-disjoint 划分、top-K full-catalogue 硬负样本、以及
+  （可选）relation-aware `W_r` 或 pairwise ranking loss。完整分析见
+  [`HARD_NEGATIVE_COMPARISON.md`](../HARD_NEGATIVE_COMPARISON.md)。
+
+产物：`logos_transformer/checkpoints_hardneg/closure_gat_hardneg_best.pt`、
+`closure_gat_hardneg_best_margin.pt`（诊断用）、`training_report.txt`。
 
 ---
 

@@ -65,3 +65,6 @@ logos_transformer/checkpoints/
 
 logos_transformer/checkpoints_disjoint/
 
+
+logos_transformer/checkpoints_hardneg/
+

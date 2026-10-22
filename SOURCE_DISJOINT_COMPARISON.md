@@ -91,6 +91,13 @@ distribution (BCE/AUC), while full-catalogue MRR is the harder, shared metric.
    in the top 10" without top-1 precision. A 2-layer GAT only sees 2 hops, so
    this is expected, but it bounds the claim.
 
+> **Correction (2026-10-22)**: the per-depth table above is affected by an
+> alignment bug in `filtered_metrics.by_depth`; see the Correction section at
+> the end. The overall MRR 0.5690 is unaffected. Corrected per-depth: depth 2
+> 0.5022 / H@1 0.2667, depth 3 0.5500 / 0.3750, depth 4 0.6667 / 0.3333,
+> depth 5 1.0000 / 1.0000. There is no monotonic depth decay, and depth ≥ 3
+> does have top-1 hits.
+
 ## Verdict
 
 - **By the AUC rule (> 0.85): passes** — but AUC is saturated and is not the
@@ -103,7 +110,8 @@ distribution (BCE/AUC), while full-catalogue MRR is the harder, shared metric.
   the previous MRR being higher, as suspected.
 - **What is not supported**: that the gain comes from source-conditioned
   relational structure. Roughly 92% of the test MRR is reproduced by a global
-  target prior, and depth ≥ 3 has no top-1 hits. The honest claim today is
+  target prior, and depth ≥ 3 has no top-1 hits (corrected below). The honest
+  claim today is
   "learns a shallow ancestor prior plus a small source-specific signal", not
   "learns multi-hop relational reasoning".
 
@@ -144,3 +152,46 @@ Artifacts:
 
 - `logos_transformer/checkpoints/closure_gat_best.pt` + `training_report.txt` (random)
 - `logos_transformer/checkpoints_disjoint/closure_gat_disjoint_best.pt` + `training_report.txt` (source-disjoint)
+
+---
+
+## Correction (2026-10-22): per-depth alignment bug
+
+The per-depth table in §“Depth decay” was produced by
+`train_closure.py::filtered_metrics`. Its **overall** MRR / Hits / AUC are
+correct, but its `by_depth` view is not:
+
+```python
+# simplified
+ranks = []
+for (src, relation), keep in keep_by_query.items():
+    for dst in keep:                 # `keep` is a set -> arbitrary order
+        ranks.append(rank_of(dst))
+by_depth = defaultdict(list)
+for sample, rank in zip(test_positives, ranks):   # different order
+    by_depth[sample.depth].append(rank)
+```
+
+When a source has several closure positives, the two orders differ and ranks are
+assigned to the wrong depth. The overall MRR is a mean over the same multiset of
+ranks, so it is unaffected.
+
+Corrected per-depth (per-positive ranks, same filtered mask; seed 42):
+
+| Depth | n | MRR | Hits@1 | Hits@10 |
+|---|---:|---:|---:|---:|
+| 2 | 15 | **0.5022** | **0.2667** | 1.0000 |
+| 3 | 8 | **0.5500** | **0.3750** | 1.0000 |
+| 4 | 3 | **0.6667** | **0.3333** | 1.0000 |
+| 5 | 2 | **1.0000** | **1.0000** | 1.0000 |
+
+Consequences:
+
+- There is **no monotonic depth decay**.
+- “depth ≥ 3 has no top-1 hits” is **false**: depth 3 has 3/8 top-1 hits,
+  depth 4 has 1/3, depth 5 has 2/2 (tiny n).
+- The overall MRR 0.5690 and the target-prior conclusion
+  (0.5259 / 0.5690 ≈ 92%) are unchanged.
+- The hard-negative follow-up uses the corrected per-positive ranker
+  (`full_catalogue_by_depth` in `train_closure_hardneg.py`); see
+  [`HARD_NEGATIVE_COMPARISON.md`](HARD_NEGATIVE_COMPARISON.md).
