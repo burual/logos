@@ -400,6 +400,7 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 ### 5.4 实现状态
 
 - 训练循环、数据集划分、checkpoint 保存已在 `logos_transformer/train_closure.py` 实现，训练目标为**闭包预测**（见 §9）。
+- **关系条件化打分头 `W_r` 已实现**：`logos_transformer/train_closure_relaware.py` 为 45 种关系各建一个 32×32 矩阵，稀有/未见关系回退到共享矩阵，见 §9.10。注意当前闭包标签中 240/241 是 `is_a`，因此该实现尚无法在数据上证明关系多样性的收益。
 - 本节其余建议（掩码关系恢复、AdamW + weight_decay、按深度划分、查询级负采样）**尚未实现**，仍作为后续方向。
 
 ---
@@ -490,7 +491,8 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 | batch / epochs | 64 / 最多 200，早停 patience=20，seed=42 |
 
 打分头**与关系类型无关**（共享一个 `W`）；关系仅用于分层划分、分组指标与负采样。
-这是本实验最明显的简化，关系条件化的 `W_r` 是下一步。
+这是本实验最明显的简化。关系条件化的 `W_r` 已在 §9.10 实现并复测；当前数据
+（240/241 为 `is_a`）不足以证明其收益。
 
 ### 9.3 实测结果（随机划分）
 
@@ -561,7 +563,8 @@ Top-5 多跳目标（隐藏了 1 跳邻居）：
   而非冷启动 source**）；再加上 transductive 节点嵌入，AUC 偏高可以预期。诚实的压力测试是
   **按 source 划分**（留出整个词），已在 §9.8 补做；MRR 下降 0.197，但 train ≈ test，
   说明随机划分的虚高很可能主要来自 source 泄漏。
-- **头与关系无关**，`has_part` 仅 1 个正样本，长尾关系完全没有评估。
+- **头与关系无关**，`has_part` 仅 1 个正样本，长尾关系完全没有评估；§9.10 已实现
+  关系条件化 `W_r`，但受同样的数据多样性限制。
 - **Precision@K 低**：每个 query 在 170 候选里通常只有 1–2 个真目标，`P@10` 上限本就 ≈0.1；
   排序类指标（MRR/Hits）更有信息量。
 - 模型是 **transductive** 的：节点嵌入按 `sense_id` 学习，checkpoint 只能在**同一节点顺序**下加载。
@@ -666,11 +669,85 @@ positive 上计算 hard-neg MRR、目标先验 MRR 与 margin，并与 loss 同�
 - 结论：硬负样本训练**显著增强 source 条件化信号**并降低对目标先验的依赖，
   但不是全面的多跳排序提升；细粒度推理仍受数据多样性限制。下一步：扩充动物
   库 / 同分支祖先、target-disjoint 划分、top-K full-catalogue 硬负样本、以及
-  （可选）relation-aware `W_r` 或 pairwise ranking loss。完整分析见
+  pairwise ranking loss。relation-aware `W_r` 已在 §9.10 实现并复测；完整分析见
   [`HARD_NEGATIVE_COMPARISON.md`](../HARD_NEGATIVE_COMPARISON.md)。
 
 产物：`logos_transformer/checkpoints_hardneg/closure_gat_hardneg_best.pt`、
 `closure_gat_hardneg_best_margin.pt`（诊断用）、`training_report.txt`。
+
+### 9.10 关系感知打分头（relation-aware `W_r`, 2026-10）
+
+§9.9 的后续建议之一是实现关系条件化的打分头。新增
+`logos_transformer/train_closure_relaware.py`，保持与 hard-negative 实验**完全相同**的
+source-disjoint 划分、硬/中/易负采样、优化器与超参数，只替换打分头：
+
+```text
+旧: score(s,t)   = h_s^T W h_t
+新: score(s,t,r) = h_s^T W_r h_t
+```
+
+实现细节：
+
+- 为图中 **45 种关系**各建一个 32×32 的 `W_r`（46,080 参数），另建一个
+  `W_shared`（1,024 参数）与 45 个门控标量（45 参数）；关系头合计 **47,149** 参数，
+  模型总计 **250,605** 参数。
+- 训练正样本数 `count >= 5`：直接用 `W_r`；`0 < count < 5`：使用
+  `sigmoid(g_r) * W_r + (1 - sigmoid(g_r)) * W_shared`；`count == 0`：回退到
+  `W_shared`。`count` 以 buffer 保存，checkpoint 可复现同样的 dedicated/gated/unseen 判定。
+- 可选 `--freeze-gat-epochs 10`（默认）：前 10 个 epoch 冻结 GAT、只训练关系头，
+  第 11 个 epoch 解冻；冻结期间关闭 GAT dropout。
+- 新增 per-relation 全库 MRR / Hits、per-relation hard-pool MRR / margin，以及按关系
+  分组的第 1 层注意力 top-3 边诊断。
+- 与 `checkpoints_hardneg/closure_gat_hardneg_best.pt` 在**同一批 test pairs 与
+  hard pools** 上逐项对比。
+
+数据事实（这是本次结论的关键）：
+
+| relation | depth>=2 正样本 | train / val / test |
+|---|---:|---|
+| `is_a` | 240 | 179 / 33 / 28 |
+| `has_part` | 1 | 1 / 0 / 0 |
+| `has_property` | **0** | 0 / 0 / 0 |
+| 其余 42 种 | 0 | 0 / 0 / 0 |
+
+因此 43 个 `W_r` 从未收到闭包正样本；`has_part` 只有 1 个训练样本；test 的 28 个
+正样本**全部是 `is_a`**。per-relation test MRR 与 pooled MRR 在数学上必然相同。
+
+实测（50 epoch 早停；best val loss 0.1086 @ epoch 30；best val margin +0.1862 @ epoch 20）：
+
+| 指标 | 随机划分 | 源分离 | 硬负样本 | 关系感知（本次） |
+|---|---:|---:|---:|---:|
+| Test MRR | 0.7656 | 0.5690 | 0.6404 | **0.6889** |
+| Hits@1 | 0.6389 | 0.3571 | 0.4643 | **0.5000** |
+| Hits@3 | 0.9167 | 0.6429 | 0.7143 | **0.8571** |
+| Hits@10 | 0.9722 | 1.0000 | 0.9643 | 0.9643 |
+| Hard-neg MRR | — | 0.7411 | 0.9714 | **0.9688** |
+| Hard-pool margin | — | +0.0407 | +0.2292 | **+0.2106** |
+| Full-catalogue margin | — | +0.0431 | +0.1619 | **+0.2032** |
+
+- **Hard-neg MRR 0.9688**，略低于 0.97 阈值，也略低于 hard-negative 的 0.9714；
+  paired source-cluster bootstrap（15 test sources, 10k）差值 −0.0028，
+  95% CI [−0.0098, +0.0000]。
+- **Hard-pool margin +0.2106**，低于 0.2292；paired 差值 **−0.0191**
+  [−0.0400, −0.0041]，即 hard-pool 上的退步是统计支持的。
+- Full-catalogue MRR 提升 +0.0486（CI [−0.0002, +0.1408]），full-catalogue margin
+  提升 +0.0412（CI [−0.0039, +0.1319]），两者都不显著。
+- `猫 -> 生物` 的 full rank 从 hard-negative 的 #13 变为 **#12**，没有回到
+  source-disjoint 的 #3；hard-pool rank 从 #4 退到 #6。
+- 逐层注意力诊断按关系输出了 top-3 边；`is_a` 的注意力仍集中在少数结构边上，
+  但注意力模式不能解释 full-catalogue 的误排（如 `影像特征`）。
+
+**结论**：`W_r` 已正确实现，且是低成本的扩展；但当前数据无法验证关系多样性的收益。
+test 只有一个关系，43 个头未被训练，`has_property` 没有 depth>=2 正样本。观察到的
+full-catalogue 小幅提升更可能来自初始化、10 epoch GAT 冻结及优化轨迹，而不是
+关系条件化本身。当前瓶颈仍是**闭包标签的关系多样性 + 同分支负样本多样性**，不是
+打分头。下一步应优先扩充同分支祖先（如 `猫科`、`哺乳动物`）与 `has_property`
+多跳标签；若要隔离冻结的影响，应补跑 `--freeze-gat-epochs 0` 消融。
+
+产物：`logos_transformer/checkpoints_relaware/closure_gat_relaware_best.pt`、
+`closure_gat_relaware_best_margin.pt`（诊断用）、`training_report.txt`。
+完整分析、逐关系表、逐深度表与 bootstrap 见
+[`RELATION_AWARE_COMPARISON.md`](../RELATION_AWARE_COMPARISON.md)。
 
 ---
 
