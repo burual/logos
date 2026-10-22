@@ -328,14 +328,14 @@ validate_syntax_parser.py        PASS 214 / FAIL 0
 validate_medical.py              PASS 230 / FAIL 0   ← 69 + §M10 29 + §M11 34 + §M12 38
                                                         + §M13 53 + §M1 逐文件 7
 tests/test_e2e_cat_eats_fish.py  PASS 64 / FAIL 0 / XFAIL 4（TOTAL 68）
-apply_seeds.py                   自检 38 项 全绿，exit 0
+apply_seeds.py                   自检 39 项 全绿，exit 0
 ────────────────────────────────────────────
-合计 937 项（六个校验脚本 + e2e TOTAL 68）+ 38 项建库自检 = 975 项，FAIL 0
+合计 937 项（六个校验脚本 + e2e TOTAL 68）+ 39 项建库自检 = 976 项，FAIL 0
 ```
 
 > 计数口径：e2e 按 **TOTAL 68** 计（PASS 64 + XFAIL 4），XFAIL 是主动记录的
-> 已知偏差，仍属"被断言覆盖"的用例。若只计 PASS 64，则合计为 971 ——
-> README 采用 975 口径，两处保持一致。
+> 已知偏差，仍属"被断言覆盖"的用例。若只计 PASS 64，则合计为 972 ——
+> README 采用 976 口径，两处保持一致。
 
 > `validate_closure.py` / `validate_syntax_parser.py` 只加载 schema 或自建库，
 > **不读医学种子**，故计数在本轮保持 **87 / 214** 不变 —— 它们的作用是

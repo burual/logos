@@ -71,9 +71,9 @@ python validate_medical.py
 | validate_closure | 87 | ✅ |
 | validate_syntax_parser | 214 | ✅ |
 | validate_medical | 230 | ✅ |
-| e2e | 68 (+4 XFAIL) | ✅ |
-| apply_seeds 自检 | 38 | ✅ |
-| **合计** | **975** | **FAIL 0** |
+| e2e | 64 PASS / 4 XFAIL | ✅ |
+| apply_seeds 自检 | 39 | ✅ |
+| **合计** | **976** | **FAIL 0** |
 
 > 已知偏差以 `XFAIL` 档记录，使「FAIL=0」与「诚实记录缺陷」兼容。
 
@@ -132,12 +132,15 @@ python validate_medical.py
 | 医学库 | ✅ | 医学骨架 + **症状继承**（沿 `is_a` 闭包）+ **症状严重度**（`sense_features`）+ **影像特征子树** |
 | 动物库 | 🚧 | 规划中（当前仅有跨库链接节点） |
 
-### 已实现的两条推理链
+### 两条推理链的现状
 
-- **症状继承** —— 疾病的症状 = 直接声明 ∪ 沿 `is_a` 继承（`has_symptom` 不产生闭包，
+- **症状继承（✅ 已实现）** —— 疾病的症状 = 直接声明 ∪ 沿 `is_a` 继承（`has_symptom` 不产生闭包，
   继承发生在 `is_a` 维度）。如 `癫痫` ⇒ 8 种症状 = 层边继承 5 + 直接边 3。
-- **影像特征映射** —— 数值 → 符号：CNN 检测结节 → ML 输出影像特征 → Logos 推理。
-  如 `恶性结节` 典型特征 = {不规则形, 毛刺状, 高密度}（`typically_has`，confidence 0.8）。
+- **影像特征映射（🚧 设计完成，实现待补）** —— 设计文档与**符号词表**已就位：
+  `seed_medical_v3_imaging.sql`（37 个义项 / 12 个义素 / 6 条 `typically_has`），
+  符号侧的查询可用，如 `恶性结节` 典型特征 = {不规则形, 毛刺状, 高密度}（`typically_has`，confidence 0.8）。
+  **CNN 检测（Layer 1）与 ML 映射层（Layer 2，SVM/RF → 符号特征）尚未实现** ——
+  仓库内没有 `imaging/` 模块，当前只覆盖「数值 → 符号」的目标词表端。
 
 ## 设计哲学
 
@@ -145,6 +148,16 @@ python validate_medical.py
 
 语义是一张**可查询的图**，不是一个**不可解释的向量**。
 每一条关系都被 SQL 断言钉住，任何一处语义错误都应当能被一条查询捕获。
+
+## 路线图（Roadmap / Planned）
+
+以下能力**尚未实现**（当前仓库只有设计文档或符号词表，没有对应代码模块）：
+
+- **影像管线 Layer 2 ML 映射器** —— SVM / 随机森林 → 符号特征；Layer 1 的 CNN 检测同样待补。
+  已有成果为符号词表与设计文档（`seed_medical_v3_imaging.sql`、`docs/MEDICAL_LIB_DESIGN.md` §13）。
+- **动物库领域扩展** —— 目前只预留了跨库链接节点，领域子树尚未建立。
+- **Logos Transformer** —— 基于关系图的注意力推理（relational graph attention）。
+- **自然语言接口** —— 面向终端用户的自然语言问答 / 写作入口。
 
 ## 许可证
 

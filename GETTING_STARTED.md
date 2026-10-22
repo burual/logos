@@ -381,8 +381,8 @@ conn.close()
 | `validate_syntax_parser.py` | 214 | 句法解析器 |
 | `validate_medical.py` | 230 | 医学库专项（§M1–§M13） |
 | `tests/test_e2e_cat_eats_fish.py` | 68（PASS 64 + XFAIL 4） | 端到端，走 `init_database` |
-| `apply_seeds.py` 自检 | 38 | 建库后结构自检 |
-| **合计** | **975** | **FAIL 0** |
+| `apply_seeds.py` 自检 | 39 | 建库后结构自检 |
+| **合计** | **976** | **FAIL 0** |
 
 约定：
 
