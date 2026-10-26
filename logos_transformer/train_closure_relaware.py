@@ -19,7 +19,8 @@ The same ``W`` is used for every relation, so the model cannot represent
 
 Design
 ------
-* One ``W_r`` (32 x 32) for every relation in the graph vocabulary (45 types).
+* One ``W_r`` (32 x 32) for every relation in the graph vocabulary (46 types in
+  the expanded animal-kingdom database).
 * A single ``W_shared`` for relations with fewer than ``MIN_DEDICATED`` (5)
   training positives.  Those relations use a learned gate:
 
@@ -35,13 +36,17 @@ same source-disjoint split, same hard/medium/easy sampling, same optimizer,
 same checkpoint selection (best val loss), and the same hard-negative and
 target-prior diagnostics.
 
-Important data caveat
-----------------------
-The graph has 45 relation types, but depth>=2 closure positives contain only
-``is_a`` (240) and ``has_part`` (1); ``has_property`` has 0.  Consequently only
-``is_a`` is a dedicated head, ``has_part`` is gated-shared, and 43 heads are
-never trained.  The implementation is relation-aware, but this dataset cannot
-demonstrate a benefit from relation diversity.  The report says this explicitly.
+Expanded-data caveat
+--------------------
+The current graph has 46 relation types and 638 depth>=2 closure positives.
+Five relations have >=5 train positives (``is_a``, ``can_do``, ``has_property``,
+``typically_has``, ``part_of``) and therefore receive dedicated heads;
+``has_part`` has one positive and is gated-shared; the remaining 40 relation
+types have no depth>=2 positive and fall back to the shared head.  The test
+split exercises ``is_a``, ``can_do``, ``has_property`` and ``typically_has``.
+``opposite_of`` has only depth=1 closure and is not a closure-prediction target.
+The report prints per-relation metrics so each trained head is evaluated on its
+own relation type rather than only on ``is_a``.
 
 Usage
 -----
@@ -896,8 +901,8 @@ def build_report(
             f"{str(row['relation']):<12} {str(row['band']):>5} {row['rows']:>5} "
             f"{row['distinct_targets']:>17} {row['distinct_sources']:>17}"
         )
-    lines.append("  is_a depth-2 has 102 rows but only 14 distinct targets; other sources'")
-    lines.append("  targets are usually shared ancestors and therefore blocked as negatives.")
+    lines.append("  When distinct_targets is much smaller than rows, many sources share a")
+    lines.append("  target; those shared targets are blocked as negatives for other sources.")
     lines.append("")
     lines.append("--- Hard-negative pools per positive ---")
     lines.append("hard = same relation + same depth band (2 / 3 / 4+), other source,")
@@ -1003,8 +1008,10 @@ def build_report(
                 f"{_fmt(p.get('mrr', float('nan'))):>7} "
                 f"{m['mrr'] - p.get('mrr', float('nan')):+.4f}"
             )
-    lines.append("  Test positives are 28 is_a; has_part is train-only (1) and")
-    lines.append("  has_property has 0 depth>=2 positives, so it cannot be evaluated.")
+    tested_rels = sorted(metrics["test"]["by_relation"])           # type: ignore[union-attr]
+    lines.append("  Test relations: " + (", ".join(tested_rels) if tested_rels else "none"))
+    lines.append("  Relations with no depth>=2 test positive are omitted from the test")
+    lines.append("  rows above; they are not scored as zero.")
     lines.append("")
     lines.append("--- Hard-negative protocol (rank against ALL eligible hard negatives) ---")
     header = (f"{'split':<6} {'pos':>4} {'hardMRR':>8} {'prior':>8} {'margin':>8} "
@@ -1131,7 +1138,7 @@ def build_report(
         lines.append(f"  {i}. {item['label']}({item['sid']})  "
                      f"score={item['score']:.4f}{extra}")
     if target_ranks:
-        lines.append("  Known closure targets and their ranks (is_a head):")
+        lines.append("  Known closure targets and their ranks (per-relation head):")
         for label, relation, depth, rank in target_ranks:
             lines.append(f"    {label:<14} {relation} depth={depth}  rank=#{rank}")
     if cat_hard is not None:
@@ -1140,52 +1147,82 @@ def build_report(
     lines.append("")
     lines.append("--- Expected-outcome check ---")
     test_rel = metrics["test"]["by_relation"]                    # type: ignore[index]
-    is_a = test_rel.get("is_a", {})
-    lines.append(f"Per-relation vs pooled (test, is_a) : MRR={_fmt(is_a.get('mrr'))} "
-                 f"vs pooled={_fmt(test_m['mrr'])}")
-    lines.append("  The test set contains only is_a, so per-relation MRR is identical to")
-    lines.append("  pooled MRR by construction. has_part is train-only; has_property has")
-    lines.append("  0 depth>=2 positives. Relation diversity cannot be evaluated here.")
+    lines.append(f"Pooled test MRR                     : {_fmt(test_m['mrr'])}")
+    for rel in sorted(test_rel):
+        fm = test_rel[rel]
+        lines.append(f"  {rel:<14} n={int(fm['n']):>2} MRR={_fmt(fm['mrr'])} "
+                     f"H@1={_fmt(fm['hits@1'])}")
+    lines.append("  Each row uses the query relation's own effective head, so a trained")
+    lines.append("  W_r can be read separately from the shared fallback. Relations with")
+    lines.append("  no depth>=2 test positive are omitted, not reported as zero.")
     cat_full = next((r for _, rel, _, r in target_ranks if rel == "is_a"), None)
     lines.append(f"猫->生物 full-catalogue rank       : "
-                 f"#{cat_full if cat_full is not None else 'n/a'} "
-                 f"(hardneg baseline: #13, disjoint baseline: #3)")
+                 f"#{cat_full if cat_full is not None else 'n/a'}")
     lines.append(f"Hard-neg MRR >= 0.97               : {_fmt(test_h.model_mrr)} -> "
                  f"{'PASS' if test_h.model_mrr >= 0.97 else 'FAIL'}")
     if baseline_hard is not None:
         d_margin = test_h.margin - baseline_hard.margin
-        lines.append(f"Margin vs hardneg baseline         : {d_margin:+.4f} "
+        lines.append(f"Margin vs {baseline_name:<22}: {d_margin:+.4f} "
                      f"({'improved' if d_margin > 0 else 'not improved'})")
+    else:
+        lines.append("Margin vs baseline                 : n/a (checkpoint incompatible "
+                     "with this graph)")
+        lines.append("  The comparison checkpoint was trained on a different node set, so")
+        lines.append("  absolute per-relation MRR is the primary read for this run.")
     lines.append("")
     lines.append("--- Verdict ---")
+    n_test_rel = len(test_rel)
     if baseline_hard is not None:
         if test_h.model_mrr >= 0.97 and test_h.margin > baseline_hard.margin:
             lines.append("The relation-aware head preserves hard-neg retrieval and improves")
             lines.append("the margin over the hard-negative baseline on these test pairs.")
         elif test_h.model_mrr >= 0.97:
             lines.append("Hard-neg retrieval is preserved, but the margin does not improve.")
-            lines.append("The head is relation-aware in code but the data has only one")
-            lines.append("test relation, so there is no relation-diversity signal to exploit.")
+            if n_test_rel > 1:
+                lines.append(f"The test split covers {n_test_rel} relations; see the")
+                lines.append("per-relation table for which trained heads carry the signal.")
+            else:
+                lines.append("Only one test relation is present, so relation diversity")
+                lines.append("cannot be evaluated on this split.")
         else:
-            lines.append("Hard-neg retrieval regressed below 0.97. The relation-aware head")
-            lines.append("does not help at this graph size; see caveats.")
+            lines.append("Hard-neg retrieval regressed below 0.97. The per-relation table")
+            lines.append("shows whether the regression is concentrated in specific heads.")
+    else:
+        lines.append("No compatible baseline checkpoint for this graph; this run reports")
+        lines.append("absolute metrics only. With a source-disjoint split and "
+                     f"{n_test_rel} test relation(s),")
+        lines.append("per-relation MRR is the primary read.")
     lines.append("")
     lines.append("--- Caveats ---")
-    lines.append("* Only 2 of 45 relations occur as depth>=2 closure positives: is_a (240)")
-    lines.append("  and has_part (1). has_property has 0. Thus 43 W_r heads are never")
-    lines.append("  trained and the test set exercises only the is_a head. Any delta vs the")
-    lines.append("  hard-negative run comes from initialisation/freezing, not from relation")
-    lines.append("  conditioning across relations.")
-    lines.append("* has_part has one positive, in train. Its gated W_r/W_shared blend is")
-    lines.append("  therefore a single-example fit and is not evaluated on val/test.")
+    train_rel_counts = Counter(p.relation for p in train["pos"])   # type: ignore[arg-type]
+    dedicated_rels = sorted(r for r, c in train_rel_counts.items() if c >= MIN_DEDICATED)
+    gated_rels = sorted(r for r, c in train_rel_counts.items() if 0 < c < MIN_DEDICATED)
+    n_unseen = len(graph.relation_names) - len(dedicated_rels) - len(gated_rels)
+    lines.append(f"* {len(graph.relation_names)} relation types: {len(dedicated_rels)} "
+                 f"dedicated ({', '.join(dedicated_rels) or 'none'}); "
+                 f"{len(gated_rels)} gated ({', '.join(gated_rels) or 'none'}); "
+                 f"{n_unseen} use W_shared.")
+    lines.append("* A relation needs >= "
+                 f"{MIN_DEDICATED} train positives for a dedicated W_r. Relations")
+    lines.append("  with no depth>=2 positive fall back to W_shared and are omitted from")
+    lines.append("  the test per-relation rows rather than scored as zero.")
+    if gated_rels:
+        lines.append(f"* Gated relation(s) {', '.join(gated_rels)} have fewer than")
+        lines.append(f"  {MIN_DEDICATED} train positives, so their W_r/W_shared blend is a")
+        lines.append("  low-sample fit and may not be stable.")
     lines.append("* Freezing the GAT for the first epochs trains the heads on fixed random")
     lines.append("  embeddings; this can overfit and is reported, not silently tuned.")
-    lines.append("* Hard pools are intrinsically tiny (is_a: 14/6/3 distinct targets at")
-    lines.append("  depth 2/3/4+). Most hard negatives are cross-branch hubs, so the")
-    lines.append("  learned signal remains coarse.")
+    depth_k = ", ".join(
+        f"depth {depth} K={dm['mean_k']:.1f}"
+        for depth, dm in sorted(test_h.by_depth.items())
+    )
+    if depth_k:
+        lines.append(f"* Test hard-pool sizes: {depth_k}. Small pools make the")
+        lines.append("  hard-pool MRR coarse, and most hard negatives are cross-branch hubs.")
     lines.append("* Source-disjoint is still transductive: test-source nodes appear in the")
     lines.append("  message graph and their embeddings are updated during training.")
-    lines.append("* Test has 15 sources / 28 positives; small deltas are not decisive.")
+    lines.append(f"* Test has {len(sources_by_split['test'])} sources / "
+                 f"{len(data['test']['pos'])} positives; small deltas are not decisive.")
     lines.append("* AUC is on the sampled hard/medium/easy mix, not the random-negative AUC")
     lines.append("  used in the earlier random-split report.")
     lines.append("")

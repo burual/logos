@@ -28,6 +28,13 @@ set is 28/28 `is_a`. Therefore the run cannot show whether relation-specific
 scoring helps, and the observed delta is mostly an initialization / GAT-freeze
 trajectory effect, not evidence for relation conditioning.
 
+> **Update (2026-10-26):** the animal-kingdom expansion changed this picture.
+> The experiment was re-run on 250 senses / 1090 closure rows / 46 relation
+> types. Five heads now receive dedicated training, and the test split covers
+> four relations. See **§1b** for the new per-relation results and an explicit
+> old-vs-new comparison. The original single-relation analysis below is kept
+> unchanged as the historical pre-expansion baseline.
+
 ---
 
 ## 1. Requested comparison
@@ -71,6 +78,153 @@ Notes:
 (+0.0486) and Hits@3 (+0.1428), but it does **not** preserve the hard-neg
 threshold (0.9688 < 0.97) and it **lowers** the hard-pool margin by 0.0186. It
 raises the full-catalogue margin by 0.0413.
+
+---
+
+## 1b. Re-run on expanded dataset (250 senses)
+
+This re-run uses the expanded animal-kingdom graph. The script needed only
+report-text changes: the relation vocabulary grew from 45 to 46 types, and the
+old hardcoded "only `is_a`" caveats are now derived from the data. No modeling
+code, split logic, sampler, or hyperparameter changed.
+
+### 1b.1 Dataset and run
+
+| Item | Value |
+|---|---|
+| Senses / direct edges / message edges | 250 / 477 / 1204 |
+| Closure rows | 1090 (depth=1: 452; depth>=2: **638**) |
+| Relation vocabulary | **46** types |
+| Split | source-disjoint, seed 42; train 95 / val 20 / test 20 sources |
+| Positives | train 457 / val 126 / test 55 |
+| Test relations | `is_a` 44, `can_do` 7, `has_property` 3, `typically_has` 1 |
+| Epochs | 66 (early stop); best val loss **0.2981** @ epoch 46 |
+| Best val hard-pool margin | **+0.3360** @ epoch 46 |
+| Relation-head params | 48,174 (46 `W_r` + `W_shared` + gates); model 258,542 |
+
+Effective heads after training:
+
+| Relation | Train positives | Effective head |
+|---|---:|---|
+| `is_a` | 228 | dedicated `W_r` |
+| `can_do` | 124 | dedicated `W_r` |
+| `has_property` | 55 | dedicated `W_r` |
+| `typically_has` | 44 | dedicated `W_r` |
+| `part_of` | 5 | dedicated `W_r` |
+| `has_part` | 1 | gated `W_r` + `W_shared` |
+| other 40 types (incl. `opposite_of`) | 0 | `W_shared` |
+
+`opposite_of` has 7 closure rows but **0 at depth>=2**, so it is not a closure
+prediction target and is correctly absent from the per-relation test table.
+
+### 1b.2 Per-relation test MRR (new vs old)
+
+Old = pre-expansion run (170 senses, 45 relation types, 28/28 `is_a` test).
+New = this run. "—" means the relation had no depth>=2 test positive and is
+skipped, not scored as zero.
+
+| Relation | Old n | Old full MRR | New n | New full MRR | New hard MRR | New hard margin | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `is_a` | 28 | **0.6889** | 44 | **0.5634** | 0.9470 | +0.3713 | strong, still the best-sampled head |
+| `has_property` | 0 | — | 3 | **0.6111** | 1.0000 | +0.3889 | non-random, but only 3 test positives |
+| `typically_has` | — | — | 1 | **1.0000** | 1.0000 | +0.7500 | train/val evidence only (test n=1) |
+| `can_do` | 0 | — | 7 | **0.3563** | 0.8571 | −0.1429 | hard-pool signal, no full-catalogue margin on test |
+| `part_of` | — | — | 0 | — | — | — | 5 train positives, no test coverage |
+| `has_part` | 0 | — | 0 | — | — | — | 1 gated positive |
+| `opposite_of` | — | — | 0 | — | — | — | 0 depth>=2 rows |
+
+Train/val per-relation full MRR confirms that the heads are real rather than
+test-set noise:
+
+| Relation | Train n / MRR | Val n / MRR | Test n / MRR |
+|---|---|---|---|
+| `is_a` | 228 / 0.5831 | 45 / 0.4970 | 44 / 0.5634 |
+| `has_property` | 55 / 0.5163 | 17 / 0.5502 | 3 / 0.6111 |
+| `typically_has` | 44 / 0.6386 | 13 / 0.6930 | 1 / 1.0000 |
+| `can_do` | 124 / 0.3797 | 47 / 0.3734 | 7 / 0.3563 |
+| `part_of` | 5 / 0.2452 | 4 / 0.1521 | — |
+
+`can_do` is the interesting caveat: it is well trained (124 train positives,
+hard-pool MRR 1.000 on train and val), but on the 7 test positives its full MRR
+equals the target prior exactly (0.3563), and the hard-pool prior is 1.000, so
+the test set shows **no independent `can_do` signal**. With n=7 this is not
+evidence against the head, but it is not evidence for it either.
+
+### 1b.3 Overall metrics (old vs new)
+
+The test set changed materially (28 -> 55 positives, 1 -> 4 relations, 170 ->
+250 candidate nodes, hard-pool K 7.5 -> 11.0), so this table is **descriptive,
+not a paired comparison**.
+
+| Metric | Old (pre-expansion) | New (expanded) | Direction |
+|---|---:|---:|---|
+| Test positives / sources | 28 / 15 | 55 / 20 | harder evaluation |
+| Test full-catalogue MRR | 0.6889 | **0.5476** | lower, not comparable |
+| Test Hits@1 | 0.5000 | 0.3455 | lower |
+| Test Hits@3 | 0.8571 | 0.7273 | lower |
+| Test Hits@10 | 0.9643 | 0.9455 | slightly lower |
+| Test hard-neg MRR | 0.9688 | **0.9394** | lower, K=11.0 vs 7.5 |
+| Target-prior MRR (hard pool) | 0.7581 | 0.6257 | prior is weaker here |
+| **Hard-pool margin** | **+0.2106** | **+0.3137** | **increased** |
+| Target-prior MRR (full catalogue) | 0.4857 | 0.1946 | prior is much weaker here |
+| **Full-catalogue margin** | **+0.2032** | **+0.3530** | **increased** |
+| `猫 -> 生物` full-catalogue rank | #12 | **#2** | improved |
+
+The pooled MRR drop is explained by composition, not by a broken head: the new
+test set includes low-non-`is_a` relations (`can_do` 0.3563, `has_property`
+0.6111, `typically_has` 1.0) and 250 instead of 170 candidates. The
+prior-relative signal, which is the metric that isolates the learned scorer
+from target frequency, improved on both protocols.
+
+### 1b.4 Expected-outcome check
+
+| Expected outcome | Actual | Verdict |
+|---|---|---|
+| `has_property` head non-random (>0.3) | full MRR **0.6111** (n=3); hard MRR 1.000, margin +0.3889 | **Pass (small n)** |
+| `can_do` head strong (>0.5) | hard MRR **0.8571**, but full MRR 0.3563, hard margin **−0.1429** | **Mixed / fail on full MRR** |
+| `typically_has` head >0.3 | train 0.6386 / val 0.6930 / test 1.0000 (n=1) | **Pass on train/val, weak test** |
+| `is_a` remains strong | full 0.5634, hard 0.9470, margin +0.3713 (prior 0.5757) | **Pass** |
+| Overall test MRR improves from 0.6889 | **0.5476** on a harder, differently composed test set | **Not observed; not comparable** |
+| Model-vs-prior margin increases | hard margin +0.2106 -> **+0.3137**; full margin +0.2032 -> **+0.3530** | **Pass** |
+
+### 1b.5 Which `W_r` heads are now meaningfully trained
+
+Head accounting, old vs new:
+
+| | Old (pre-expansion) | New (expanded) |
+|---|---:|---:|
+| Relation types | 45 | **46** |
+| Dedicated `W_r` heads | 1 (`is_a`) | **5** |
+| Gated `W_r` + `W_shared` | 1 (`has_part`) | 1 (`has_part`) |
+| `W_shared`-only heads | **43** | **40** |
+| Relations evaluated on test | 1 (`is_a`) | **4** |
+
+- **`is_a`** — yes. 228 train / 44 test positives; best-sampled and strongest
+  head. Hard-pool MRR 0.9470 and margin +0.3713.
+- **`has_property`** — yes, with a caveat. 55 train / 75 depth>=2 rows; full
+  test MRR 0.6111 and hard margin +0.3889, but only 3 test positives.
+- **`typically_has`** — yes on train (44) and val (13); the single test positive
+  is not enough to claim generalization.
+- **`can_do`** — trained on 124 positives with perfect train/val hard pools, but
+  the 7 test positives show no margin over the prior. Needs more test coverage.
+- **`part_of`** — only 5 train positives and no test row; weak but non-zero.
+- **`has_part`** — 1 positive, gated blend, not meaningfully trained.
+- **40 other relations** — no depth>=2 positive; `W_shared` fallback.
+
+So the relation-aware mechanism is no longer a single-head experiment: 5 heads
+receive dedicated training and 4 relation types are evaluated on test. The two
+best-sampled heads (`is_a`, `has_property`) show clear prior-relative gains.
+`can_do` is the open case.
+
+### 1b.6 Baseline limitation
+
+The pre-expansion hard-negative checkpoint is structurally incompatible with
+the 250-node graph (`gat.node_embedding` is 170 x 32 vs 250 x 32), so the
+script's automatic paired comparison is reported as `n/a`. The old numbers in
+this section come from the previous `training_report.txt` and are reproduced
+here for orientation; they are **not** a paired baseline. Re-training
+`train_closure_hardneg.py` on the expanded graph is the correct next step for a
+strict head ablation.
 
 ---
 

@@ -4,7 +4,7 @@
 > **代码**：`logos_transformer/prototype_gat.py`（推理）、`logos_transformer/train_closure.py`（训练）
 > **依赖**：`torch`（纯 PyTorch 实现，**不依赖** PyTorch Geometric）
 > **文档版本**：v0.1（2026-10）
-> **适用数据库**：`schema_v3.sql` 建出的 `logos.db`（当前全量 250 义项 / 477 条义项级关系 / 46 种关系类型 / 1090 条闭包；§9 的 W_r 实验基于动物库扩展前的 170 / 161 / 45 / 371 快照）
+> **适用数据库**：`schema_v3.sql` 建出的 `logos.db`（当前全量 250 义项 / 477 条义项级关系 / 46 种关系类型 / 1090 条闭包；§9 的 W_r 实验已在动物库扩展后的 250 / 477 / 46 / 1090 快照上复测，见 §9.10.1；§9.10 正文保留扩展前的 170 / 161 / 45 / 371 结果作为基线）
 
 ---
 
@@ -400,7 +400,7 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 ### 5.4 实现状态
 
 - 训练循环、数据集划分、checkpoint 保存已在 `logos_transformer/train_closure.py` 实现，训练目标为**闭包预测**（见 §9）。
-- **关系条件化打分头 `W_r` 已实现**：`logos_transformer/train_closure_relaware.py` 为 45 种关系各建一个 32×32 矩阵，稀有/未见关系回退到共享矩阵，见 §9.10。注意当前闭包标签中 240/241 是 `is_a`，因此该实现尚无法在数据上证明关系多样性的收益。
+- **关系条件化打分头 `W_r` 已实现**：`logos_transformer/train_closure_relaware.py` 为 46 种关系各建一个 32×32 矩阵，稀有/未见关系回退到共享矩阵，见 §9.10。扩展后的数据集有 5 个关系获得专属训练（`is_a` / `can_do` / `has_property` / `typically_has` / `part_of`），test 覆盖 4 个关系，已能验证关系多样性的收益（§9.10.1）。
 - 本节其余建议（掩码关系恢复、AdamW + weight_decay、按深度划分、查询级负采样）**尚未实现**，仍作为后续方向。
 
 ---
@@ -491,8 +491,10 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 | batch / epochs | 64 / 最多 200，早停 patience=20，seed=42 |
 
 打分头**与关系类型无关**（共享一个 `W`）；关系仅用于分层划分、分组指标与负采样。
-这是本实验最明显的简化。关系条件化的 `W_r` 已在 §9.10 实现并复测；当前数据
-（240/241 为 `is_a`）不足以证明其收益。
+这是本实验最明显的简化。关系条件化的 `W_r` 已在 §9.10 实现；扩展数据集复测（§9.10.1）
+中 5 个关系获得专属训练、test 覆盖 4 个关系，`is_a` / `has_property` 显示出明确高于
+target prior 的排序能力，`can_do` 仍缺 test 证据。扩展前的单关系数据（240/241 为
+`is_a`）无法区分关系条件化与单一矩阵。
 
 ### 9.3 实测结果（随机划分）
 
@@ -563,8 +565,9 @@ Top-5 多跳目标（隐藏了 1 跳邻居）：
   而非冷启动 source**）；再加上 transductive 节点嵌入，AUC 偏高可以预期。诚实的压力测试是
   **按 source 划分**（留出整个词），已在 §9.8 补做；MRR 下降 0.197，但 train ≈ test，
   说明随机划分的虚高很可能主要来自 source 泄漏。
-- **头与关系无关**，`has_part` 仅 1 个正样本，长尾关系完全没有评估；§9.10 已实现
-  关系条件化 `W_r`，但受同样的数据多样性限制。
+- **头与关系无关**（§9.2–§9.9 的 `W`）；§9.10 已实现关系条件化 `W_r`。在扩展数据集
+  （§9.10.1）上 5 个关系有专属头、test 覆盖 4 个关系；扩展前的数据只有 `is_a`
+  闭包正样本，无法评估关系多样性。
 - **Precision@K 低**：每个 query 在 170 候选里通常只有 1–2 个真目标，`P@10` 上限本就 ≈0.1；
   排序类指标（MRR/Hits）更有信息量。
 - 模型是 **transductive** 的：节点嵌入按 `sense_id` 学习，checkpoint 只能在**同一节点顺序**下加载。
@@ -748,6 +751,70 @@ full-catalogue 小幅提升更可能来自初始化、10 epoch GAT 冻结及优�
 `closure_gat_relaware_best_margin.pt`（诊断用）、`training_report.txt`。
 完整分析、逐关系表、逐深度表与 bootstrap 见
 [`RELATION_AWARE_COMPARISON.md`](../RELATION_AWARE_COMPARISON.md)。
+
+### 9.10.1 扩展数据集复测（250 义项 / 1090 闭包，2026-10-26）
+
+动物库扩展后在同一脚本上重跑（`--epochs 200`，66 epoch 早停；best val loss
+**0.2981** @ epoch 46，best val margin **+0.3360** @ epoch 46）。图规模 250 义项 /
+477 条义项级关系 / 1204 条消息边 / 1090 条闭包（depth=1 452，depth>=2 **638**），
+关系类型 **46** 种。这次复测的关键变化是**闭包标签终于覆盖多种关系**：
+
+| relation | train 正样本 | depth>=2 行数 | 有效头 |
+|---|---:|---:|---|
+| `is_a` | 228 | 317 | 专属 `W_r` |
+| `can_do` | 124 | 178 | 专属 `W_r` |
+| `has_property` | 55 | 75 | 专属 `W_r` |
+| `typically_has` | 44 | 58 | 专属 `W_r` |
+| `part_of` | 5 | 9 | 专属 `W_r` |
+| `has_part` | 1 | 1 | gated `W_r` + `W_shared` |
+| 其余 40 种（含 `opposite_of`） | 0 | 0 | `W_shared` |
+
+`opposite_of` 有 7 条闭包但全部是 depth=1，因此不是闭包预测目标，在逐关系
+test 表中被跳过（不记为 0）。关系头参数 48,174（46 个 `W_r` + `W_shared` + 门控），
+模型总计 258,542 参数。
+
+逐关系 test 结果（full = 全库过滤排序；hard = 全部合格硬负样本）：
+
+| relation | test n | full MRR | hard MRR | hard margin | 判读 |
+|---|---:|---:|---:|---:|---|
+| `is_a` | 44 | **0.5634** | 0.9470 | +0.3713 | 稳定，仍是最强头 |
+| `has_property` | 3 | **0.6111** | 1.0000 | +0.3889 | 非随机，但 n 很小 |
+| `typically_has` | 1 | **1.0000** | 1.0000 | +0.7500 | 主要证据来自 train/val |
+| `can_do` | 7 | **0.3563** | 0.8571 | −0.1429 | 硬池强，但 test 上没有超过 prior |
+| `part_of` | 0 | — | — | — | 仅 5 个 train 正样本 |
+| `has_part` | 0 | — | — | — | 1 个 gated 正样本 |
+| `opposite_of` | 0 | — | — | — | 0 条 depth>=2 |
+
+train/val 的同口径结果说明这些头确实在学习，而不是 test 噪声：`has_property`
+train/val full MRR 为 0.5163 / 0.5502，`typically_has` 为 0.6386 / 0.6930，
+`is_a` 为 0.5831 / 0.4970，`can_do` 为 0.3797 / 0.3734（train/val 硬池 MRR 均为
+1.000，但 test 的 7 个正样本没有体现出独立于 prior 的增益）。
+
+整体对比（**注意：test 组成已变，不是配对比较**）：
+
+| 指标 | 扩展前（170 / 45 / 371） | 扩展后（250 / 46 / 1090） |
+|---|---:|---:|
+| test 正样本 / source 数 | 28 / 15 | 55 / 20 |
+| test full MRR | **0.6889** | **0.5476** |
+| Hits@1 / @3 / @10 | 0.5000 / 0.8571 / 0.9643 | 0.3455 / 0.7273 / 0.9455 |
+| hard-neg MRR | **0.9688** | **0.9394** |
+| hard-pool margin | **+0.2106** | **+0.3137** |
+| full-catalogue margin | **+0.2032** | **+0.3530** |
+| `猫 -> 生物` full rank | #12 | **#2** |
+
+pooled MRR 的下降主要来自 test 组成（新增 `can_do` 等低 MRR 关系、候选节点
+170→250、hard K 7.5→11.0），而不是关系头失效；隔离目标频率后的 **margin 在两种
+协议上都明显上升**。因此“关系感知头只在 `is_a` 上可测”这一限制已经解除：
+5 个头获得专属训练，test 覆盖 4 种关系，`is_a` 与 `has_property` 有清晰的
+prior-relative 收益，`typically_has` 在 train/val 上有效，`can_do` 尚缺 test 证据。
+
+限制：扩展前的 hard-negative checkpoint 与 250 节点图不兼容
+（`node_embedding` 170×32 vs 250×32），本次报告的自动基线对比为 `n/a`；上表旧值
+来自旧 `training_report.txt`，仅作方向性参照。严格的 head 消融需要在扩展图上重跑
+`train_closure_hardneg.py`。
+
+完整逐关系表、逐深度表与预期核对见
+[`RELATION_AWARE_COMPARISON.md`](../RELATION_AWARE_COMPARISON.md) §1b。
 
 ---
 
