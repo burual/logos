@@ -281,29 +281,56 @@ confidence = λ · conf_path + (1 − λ) · score        λ 默认 0.5
 
 ## 4. 与符号层的集成（Integration with Symbolic Layer）
 
-### 4.1 建议的新表
+### 4.1 `inferred_relations`：设计草案 → 已实现
+
+> **已实现**（2026-11-02，`logos_transformer/infer_and_write.py`）。实际列名与本节
+> 最初的草案不同（草案是自拟的，实现按集成任务书给定的列名），差异见下方对照表。
+> 表由推理脚本 `CREATE TABLE IF NOT EXISTS` 建立，**未写进 `schema_v3.sql`**
+> （约束：不动 .sql 种子/模式文件），也不参与任何 `validate_*` 计数。
 
 ```sql
 CREATE TABLE IF NOT EXISTS inferred_relations (
-    inferred_id    INTEGER PRIMARY KEY,
-    src_id         INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
-    relation       TEXT    NOT NULL REFERENCES relation_types(relation),
-    dst_id         INTEGER NOT NULL REFERENCES senses(sense_id) ON DELETE CASCADE,
-    confidence     REAL    NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id      INTEGER NOT NULL,
+    relation_type  TEXT    NOT NULL,
+    target_id      INTEGER NOT NULL,
+    confidence     REAL    NOT NULL,
     model_version  TEXT    NOT NULL,
-    path_json      TEXT,            -- 见证路径，如 "[2,12,1026]"，便于复核
-    reviewed       INTEGER NOT NULL DEFAULT 0 CHECK (reviewed IN (0,1)),
-    created_at     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    UNIQUE (src_id, relation, dst_id, model_version)
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_inferred_conf
-    ON inferred_relations(confidence DESC)
-    WHERE reviewed = 0;
+    epoch          INTEGER,
+    depth_estimate INTEGER,          -- 估计跳数：1 / 2 / 3（3 表示 3+），NULL=无路径
+    verified       BOOLEAN DEFAULT FALSE,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    CHECK (source_id <> target_id),
+    FOREIGN KEY (source_id) REFERENCES senses(sense_id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES senses(sense_id) ON DELETE CASCADE,
+    UNIQUE (source_id, relation_type, target_id)
+);
 ```
 
-> 该 DDL **只是设计**，本次不修改 `schema_v3.sql`（约束：不动 .sql）。
-> 落地时需要一次独立的 schema 迁移，并补进 `validate_schema.py` 的表计数。
+草案 vs 实际：
+
+| 草案 | 实际 | 原因 |
+|---|---|---|
+| `inferred_id` | `id` | 与任务书一致 |
+| `src_id` / `dst_id` | `source_id` / `target_id` | 同上 |
+| `relation` | `relation_type` | 同上 |
+| `reviewed INTEGER` | `verified BOOLEAN` | 同上；语义相同（0=未复核） |
+| `path_json` 见证路径 | `depth_estimate INTEGER` | 见 §10.5：没有可靠见证路径，硬造会骗人 |
+| `REFERENCES relation_types(relation)` | 无此外键 | 关系名可能在 `closure` 存在但 `relation_types` 无对应行时静默失败；改由脚本侧校验 |
+| `UNIQUE (..., model_version)` | `UNIQUE (source_id, relation_type, target_id)` | 同一条假设只留最新一版，避免多版本堆叠；重跑时 `INSERT OR IGNORE` 幂等 |
+| `STRICT` 表 | 普通表 | SQLite `STRICT` 与 `BOOLEAN`/`TIMESTAMP` 亲和名 + `AUTOINCREMENT` 组合在该库版本上易踩坑，且本表非权威数据 |
+
+配套索引（脚本建立）：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_inferred_rel_conf
+    ON inferred_relations(relation_type, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_inferred_source
+    ON inferred_relations(source_id, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_inferred_unverified
+    ON inferred_relations(verified) WHERE verified = 0;
+```
 
 ### 4.2 为什么不直接写进 `relations`
 
@@ -318,8 +345,8 @@ CREATE INDEX IF NOT EXISTS idx_inferred_conf
 推断结果只有经过显式动作才能进入事实层：
 
 ```
-inferred_relations (reviewed=0)
-        │  人工/规则复核（reviewed=1）
+inferred_relations (verified=0)
+        │  人工/规则复核（verified=1）
         ▼
 INSERT INTO relations (..., source_id = <新增的 'Logos Transformer' source>)
         │
@@ -329,6 +356,9 @@ tr_closure_edge_ai 自动触发 → closure 物化（此时才成为"事实"）
 
 建议在 `sources` 表新增一行 `('Logos Transformer', '模型推断', ...)`，
 让每条晋升后的关系都可追溯到模型版本。
+
+> **状态**：晋升这一段**尚未实现**，而且刻意不做。写入端（`infer_and_write.py`）
+> 只到 `inferred_relations` 为止；`verified` 目前恒为 0，没有任何自动置 1 的路径。
 
 ### 4.4 API
 
@@ -357,6 +387,9 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 ```
 
 `--write` 是唯一会写库的入口，且只写 `inferred_relations`，**永不**写 `relations`。
+
+> **已实现替代品**（2026-11-02）：写入端 `infer_and_write.py`、只读查询端
+> `query_inferences.py`，接口见 §10。二者都不写 `relations`。
 
 ### 4.5 不变量（实现时必须守住）
 
@@ -400,7 +433,8 @@ python logos_transformer/query.py --src 猫 --rel is_a --top-k 10 --threshold 0.
 ### 5.4 实现状态
 
 - 训练循环、数据集划分、checkpoint 保存已在 `logos_transformer/train_closure.py` 实现，训练目标为**闭包预测**（见 §9）。
-- **关系条件化打分头 `W_r` 已实现**：`logos_transformer/train_closure_relaware.py` 为 46 种关系各建一个 32×32 矩阵，稀有/未见关系回退到共享矩阵，见 §9.10。扩展后的数据集有 5 个关系获得专属训练（`is_a` / `can_do` / `has_property` / `typically_has` / `part_of`），test 覆盖 4 个关系，已能验证关系多样性的收益（§9.10.1）。
+- **关系条件化打分头 `W_r` 已实现**：`logos_transformer/train_closure_relaware.py` 为 46 种关系各建一个 32×32 矩阵，稀有/未见关系回退到共享矩阵，见 §9.10。扩展后的数据集有 6 个关系获得专属训练（`is_a` / `can_do` / `has_property` / `typically_has` / `part_of` / `has_part`），test 覆盖 6 个关系（§9.11）。
+- **单关系隔离与梯度掩码已实现**（§9.11）：`--relation-subset` 把切分/负样本池/头/指标收窄到指定关系；`--grad-mask` 按批次清零无正样本的关系头梯度；`--early-stop rel_mrr` 支持按主关系 val MRR 早停；`--grad-report-every` 输出逐头梯度幅度诊断。四个开关默认关闭，不带开关时与旧版本逐位一致。
 - 本节其余建议（掩码关系恢复、AdamW + weight_decay、按深度划分、查询级负采样）**尚未实现**，仍作为后续方向。
 
 ---
@@ -815,6 +849,258 @@ prior-relative 收益，`typically_has` 在 train/val 上有效，`can_do` 尚�
 
 完整逐关系表、逐深度表与预期核对见
 [`RELATION_AWARE_COMPARISON.md`](../RELATION_AWARE_COMPARISON.md) §1b。
+
+### 9.11 弱关系扩容 + 训练动力学（335 义项 / 1794 闭包，2026-11-02）
+
+§9.10.1 的结论是「弱关系 test n 太小，既不能证实也不能证伪」。本轮两件事同时做：
+**数据侧**补 `seed_animal_kingdom_extended.sql`，**训练侧**给脚本加单关系隔离与
+梯度掩码。
+
+**数据侧。** 新种子 ID 段 5081–5165（85 义项，纯追加），原则是「造新源」而不是
+把边堆在少数源上 —— source-disjoint 切分下 `test n ≈ 0.15 × 该关系独立源数`。
+depth>=2 闭包：`can_do` 178→**529**、`has_property` 75→**129**、
+`typically_has` 58→**77**、`part_of` 9→**38**、`has_part` 1→**9**，
+五个目标全部达标。全库变为 335 义项 / 694 关系 / 1794 闭包（d1 664 / d2 1130）/
+1713 消息边。test 逐关系正样本：`can_do` 7→**59**、`has_property` 3→**16**、
+`typically_has` 1→**13**、`part_of` 0→**2**、`has_part` 0→**1**。
+
+**训练侧新增四个开关**（全部默认关闭，不带开关时与旧版本逐位一致）：
+
+| 开关 | 语义 |
+|---|---|
+| `--relation-subset REL...` | 正样本 / 切分 / 负样本池 / `W_r` 头 / 指标全部收窄到子集；未知关系名报错并列出可用关系 |
+| `--grad-mask` | backward 之后、step 之前清零「本批无正样本」的关系头梯度；`W_shared` 仅当整批没有共享路径关系时清零 |
+| `--early-stop rel_mrr` + `--primary-relation` | 用主关系 val 硬池 MRR 早停，单独存 `..._best_<rel>.pt` 并优先用它做最终模型 |
+| `--grad-report-every N` | 每 N epoch 打印各头平均 `|grad|`（默认 10） |
+
+**实测要点**（完整表格见 `RELATION_AWARE_COMPARISON.md` §1c）：
+
+| 运行 | epochs | test full MRR | test hard MRR | hard margin |
+|---|---:|---:|---:|---:|
+| hardneg 基线（扩展图重训，配对基线） | 24 | 0.2793 | 0.6883 | +0.0906 |
+| C1 全量 relaware | 33 | **0.3609** | 0.6938 | **+0.1623** |
+| D1 全量 + `--grad-mask` | 33 | 0.3605 | **0.7061** | **+0.1911** |
+| C2a 隔离 `can_do` | 44 | 0.2445 | **0.8923** | **+0.1560** |
+| C2b 隔离 + mask + rel_mrr 早停 | 41 | 0.2446 | **0.9000** | **+0.1641** |
+
+三条与直觉相反的发现：
+
+1. **`W_shared` 从未收到梯度。** 6 个有正样本的关系全部持有专属 `W_r`，没有任何
+   批次走共享路径。所以「未训练关系经共享头注入噪声、拖累 `can_do`」的假说在本图
+   上不成立；干扰来自**共享 GAT 编码器 + 联合优化**，这正是隔离后 `can_do`
+   hard margin 从 +0.0003 涨到 +0.1560 的原因。
+2. **弱关系的梯度没有被 `is_a` 淹没。** 解冻后各头量级同为 1e-3，epoch 30 时
+   `can_do`（1.52e-03）已超过 `is_a`（1.19e-03）。瓶颈是样本量与负样本池，不是
+   梯度尺度。
+3. **梯度掩码在单关系子集下是严格 no-op**（两次运行逐位一致、`zeroed=0`）；它的
+   收益只在联合训练里出现，且集中在弱关系（`has_property` margin +0.1979→+0.3492、
+   `typically_has` +0.0017→+0.1730）。
+
+三条未达标 / 需注意的口径：
+
+- `part_of` test n 仍只有 2（目标 ≥5）。38 条 depth>=2 分散在 16 个源上，test 只
+  分到 2 个源 —— 这是切分口径的硬约束，只能靠继续增加 part_of 的**独立源**解决。
+- `can_do` 的 **full-catalogue** MRR 为 0.2445，未达「> 0.4」；达到 >0.4 的是
+  hard-pool MRR（0.8923）。且隔离跑的硬负池对频次先验已饱和（基线 hard MRR
+  1.0000、prior 1.0000），该池上绝对差值不可读，只能读 prior-relative margin。
+- `has_property` / `typically_has` 的 test n 虽从 1–3 涨到 13–16，仍偏小；
+  `typically_has` 在 §9.10.1 里的 1.0000 是小样本幻觉，本轮回落到 0.2433。
+
+复现命令见 `RELATION_AWARE_COMPARISON.md` §1c.7。训练产物目录
+`logos_transformer/checkpoints*/` 已加入 `.gitignore`。
+
+---
+
+## 10. 端到端推理流水线（End-to-End Inference Pipeline，2026-11-02）
+
+在此之前，整条链路是「训练 → 评估 → 报表」，**模型从不产出任何可被数据库看见的东西**。
+§10 补上最后一段：从 checkpoint 到 `inferred_relations` 的写回，以及只读复核。
+
+### 10.1 数据流
+
+```
+logos.db ─┬─ senses / relations / closure ─→ 图导出（prototype_gat.load_graph）
+          │                                            │
+          ├─ closure（真值）                           ▼
+          │     │                          GAT 前向（2 层 4 头，hidden=32）
+          │     │ 排除「已存在」                        │
+          │     ▼                                      ▼
+          └─→ 候选生成 A/B ──→ 词性守卫 ──→ σ(h_sᵀW_r h_t) ──→ 阈值 + 每组 top-K
+                                                              │
+                                                              ▼
+                                                   inferred_relations（假设）
+                                                              │
+                                            query_inferences.py（只读复核）
+```
+
+其中 **`closure` 是事实，`inferred_relations` 是假设**，两者物理隔离：
+
+| | `closure` | `inferred_relations` |
+|---|---|---|
+| 来源 | `tr_closure_edge_ai` 触发器由真实 `relations` 边物化 | 模型打分 |
+| 可复现性 | 重跑种子即可完全重建 | 依赖 checkpoint，重建数据库即丢失 |
+| 是否参与视图 | 是（多处视图/校验引用） | 否（不被任何视图或 `validate_*` 引用） |
+| 可信度语义 | 事实 | `verified=0` 即「未复核的假设」 |
+
+设计理由见 §4.2：若直接插 `relations`，触发器会立刻把假设变成事实且无法回滚。
+
+### 10.2 候选生成：绕开 O(N²×R)
+
+朴素做法是把 335 × 335 × 46 ≈ 5.16M 个三元组全部打分。实际只对 **closure 真正派生过的
+6 个关系** 打分（`closure` 里存在 depth≥2 行的关系：`is_a` / `can_do` /
+`has_property` / `typically_has` / `part_of` / `has_part`），再加两条结构策略：
+
+| 策略 | 做法 | 规模（实测） |
+|---|---|---|
+| **A 邻域二跳** | 对每个有直接边的义项，取无向 1 跳邻居再扩一跳，剔除自身与 1 跳节点，对「该源已参与的每个关系」打分 | 扫描 212 个源 → 10,604 条 |
+| **B 直接边补全** | 对 `relations` 里存在、但该源在该关系上**没有任何 depth≥2 闭包行**的 (源, 关系) 对，对全部 335 节点打分 | 87 对 × 335 → 28,863 条 |
+| 去重后 | A ∪ B | **37,611 条**（vs 673,350 = 335²×6，压缩 18×） |
+
+A 覆盖「多跳可达但闭包没算出来」的目标；B 覆盖「整个关系的继承都缺失」的源——后者是
+闭包引擎结构上算不出来、但模型仍可能给出假设的部分。`--max-neighbourhood`
+（默认 60）对 A 的二跳集合按节点度数截断，避免枢纽节点（「生物」「抽象概念」）淹没候选池。
+
+### 10.3 打分
+
+```
+h  = GAT(edge_index, edge_type)              # 全图一次前向，(N, 32)
+σ  = sigmoid( h_sᵀ · W_eff(r) · h_t )        # 与训练时 score_pairs 完全同一算式
+```
+
+* `W_eff(r)` 由 checkpoint 自带的 `relation_count` 决定：`≥5` 个训练正样本 → 专属
+  `W_r`；`0 < n < 5` → 门控混合；`n = 0` → `W_shared`。
+* 实现上用 `score_all(h, r) = h W hᵀ` 一次算出 (N, N) 矩阵再按候选索引取值，
+  6 个关系共 6 × 112,225 个浮点数，比分对 einsum 快一个量级。
+* **排除规则**：`(源, 关系, 目标)` 只要在 `closure` 里出现过（任何 depth）就跳过。
+  因此「猫 is_a 生物」这类已成立的事实**不会**出现在 `inferred_relations` 里。
+
+### 10.4 两道质量闸门（本节的实测教训）
+
+只按 σ ≥ 0.8 过滤是不够的。首次运行（无闸门）写出 **1,220 行**，其中
+`蛇 is_a 潜水`（0.9997）、`犬科 has_property 潜水`（1.0000）这类明显荒谬的假设占了主流。
+
+**根因**：训练用的负样本来自 hard/medium/easy 池，池内负样本与正样本**同支同词性**
+（动物 vs 动物、动词 vs 动词）。模型从没见过「(动物, 动词) 在 `is_a` 下是负样本」，
+于是这个方向从未被压制，σ 在 OOD 目标上直接饱和到 1.0。训练报表里的 MRR / margin
+只度量**池内排序**，完全看不见这类错误——这正是「从不写回」掩盖掉的问题。
+
+两道闸门都能从数据库自身推出，不含硬编码：
+
+**闸门 1：目标词性守卫（默认开启）**
+
+`closure` 里该关系实际收过的目标词性分布（`load_relation_target_pos`），
+占比 ≥ `--pos-min-share`（默认 0.05）者进入白名单：
+
+| relation | 闭包目标词性分布 | 白名单 |
+|---|---|---|
+| `is_a` | n:100% | n |
+| `can_do` | v:100% | v |
+| `has_property` | a:82% n:18% | a, n |
+| `typically_has` | n:92% a:8% | a, n |
+| `part_of` / `has_part` | n:100% | n |
+
+剔除 13,702 条（37,611 → 23,909）。`is_a → 潜水` 这类错误被整类消掉。
+
+**闸门 2：每个 (源, 关系) 只留 top-K（默认 3）**
+
+模型是按**排名**（MRR / margin）验证的，从未做概率校准；σ 在 0.99 附近饱和，
+第 1 名与第 7 名的数值差不可读。可行的兜底是限制列表长度而非相信绝对值：
+267 行 → **154 行**（79 个 (源, 关系) 组）。
+
+最终实测：**154 行写入**，分布 `typically_has` 57 / `has_property` 30 / `is_a` 28 /
+`can_do` 27 / `part_of` 12，置信度 mean 0.8869、min 0.8028、max 0.9999。
+
+### 10.5 `depth_estimate` 的口径
+
+估计跳数，**先找同关系的路径**（闭包正是同关系组合），找不到再退回无向全关系路径
+（GAT 的消息图是全关系连通的，跨关系路径也是分数的一种可能解释），仍找不到则写
+`NULL` 而不是硬填：
+
+```sql
+depth_estimate = min(同关系有向 BFS 距离, 3)      -- 3 表示 3+
+              or min(无向全关系 BFS 距离, 3)
+              or NULL
+```
+
+16 行是 `NULL`，且**全部来自策略 B**——它们的源（`营养素`、`脑电图信号`、`恶性结节`、
+`信息人造物`、`物理人造物`、`医学概念`）在该关系上既没有同关系路径，也没有通往目标的
+无向路径，属于「纯嵌入假设」，是最需要人工复核的一批。
+草案里的 `path_json`（见证路径）被弃用：模型不会产出路径，硬造一条会误导复核者。
+
+### 10.6 实测：本流水线的输出质量
+
+**通过的**：`猫 --is_a--> 生物` 在全量 335 节点上 **rank 1/335，p=1.000**（训练报表的
+验收项，`--dry-run` 的「抽查」块会直接打印）；`人 can_do 潜水`（0.9999）、
+`鸟类 typically_has 尾巴`（0.896）等是合理的。
+
+**不通过的（必须说清）**：
+
+| 现象 | 例子 | 说明 |
+|---|---|---|
+| 关系方向混淆 | `皮肤系统 part_of 猴子` | `part_of`/`has_part` 互为逆关系，模型分不清主体与部件 |
+| 常识错误 | `蚯蚓 has_property 有脊柱`（0.966）、`蛇 has_property 温血`（0.986） | 结构合法（a 类形容词）但语义错 |
+| 源侧词性未守卫 | `防御 can_do 潜水`（0.999） | 闸门 1 只管目标；`防御`被标成 `v`，属数据标注问题 |
+| σ 不可当概率 | 置信度前 20 行全部 ≥ 0.988，其中 16 行 > 0.99 | 见 §10.4 根因；数值无法区分对错 |
+
+结论：**`inferred_relations` 是待复核假设池，不是知识**。`verified` 恒为 0，
+没有任何自动晋升路径（§4.3）。要让精度可用，正确方向是补「跨词性负样本」重训
+（§5.2 的负样本池设计），而不是继续调阈值。
+
+### 10.7 入口与命令
+
+```bash
+# 只打分，不改库（不建表）
+python logos_transformer/infer_and_write.py --dry-run --min-confidence 0.8
+
+# 写库 + SQL 复核
+python logos_transformer/infer_and_write.py --min-confidence 0.8 --verify
+
+# 只推断指定关系；关掉闸门看裸分布
+python logos_transformer/infer_and_write.py --relation-subset can_do is_a --dry-run
+python logos_transformer/infer_and_write.py --dry-run --no-pos-guard --max-per-source-relation 0
+
+# 只读复核
+python logos_transformer/query_inferences.py --stats
+python logos_transformer/query_inferences.py --source 猫 --min-confidence 0.5
+python logos_transformer/query_inferences.py --relation is_a --unverified-only
+```
+
+关键默认值：`--min-confidence 0.8`、`--max-per-source-relation 3`、
+`--pos-min-share 0.05`、`--strategies A B`、`--max-candidates 200000`（安全阀）。
+
+### 10.8 checkpoint 解析（一个必须写下来的坑）
+
+任务书指定的路径 `checkpoints_relaware/closure_gat_relaware_best.pt` 已被
+C2a「隔离 `can_do`」实验**覆盖**：该目录现在只有 **1 个 `W_r` 头（can_do）**，
+215,139 参数。用它做多关系推理时，`is_a`/`has_property` 等全部落到 `W_shared`，
+打分恒为 **0.5000**（`猫 is_a 生物` rank 162/335）——看起来像「模型没学会」，
+实际是**装错了权重**。
+
+因此脚本 `--checkpoint` 缺省为 **自动解析**：按「`W_r` 头对目标关系的覆盖率」
+在两个候选里挑，并打印选择依据：
+
+| checkpoint | 参数 | `W_r` 头 | 用途 |
+|---|---:|---:|---|
+| `checkpoints_relaware_ext/closure_gat_relaware_best.pt` | 261,354 | 46 | ✅ 多关系推理默认选它（C1 全量重训） |
+| `checkpoints_relaware/closure_gat_relaware_best.pt` | 215,139 | 1（can_do） | 隔离实验产物，只适合作单关系对照 |
+
+架构信息（层数/头数/hidden/节点数/头名/`relation_count`）全部从 `state_dict` 的形状
+与键名反推，不读任何外部配置；节点数或边类型数与当前图不符时**报错退出 1**，
+而不是静默跑出一堆无意义分数。
+
+### 10.9 守卫的不变量
+
+1. 推理对 `logos.db` 的读取走 `PRAGMA query_only = ON`；只有写库那一步开独立连接。
+2. `relations` / `closure` / `senses` **一个字节都不改**（实测重跑前后 694 / 1794 / 335 不变）。
+3. 写库全部 `INSERT OR IGNORE`；重跑第二次 `written = 0`、`跳过重复 = 154`（幂等）。
+4. `--dry-run` 连表都不建。
+5. `model_version` = `logos-gat-closure-relaware-v0.2@<checkpoint 目录名>`，可按版本整批回滚。
+6. `epoch` 只有在显式给 `--epoch` 时才有值；checkpoint 是纯 `state_dict`，不含训练元数据
+   （写 NULL 而非猜一个数字）。
+7. **`inferred_relations` 不参与数据库可重建性**：`python apply_seeds.py`（从零重建）会
+   删掉 `logos.db`，假设池随之消失；`--keep` 只重放 seed、不动结构，表与数据保留
+   （实测 `--keep` 后仍是 154 行、自检 39 项全过）。重建模型 → 重新推理是预期流程，
+   而不是缺陷：假设本来就不该被当成可复现的种子数据。
 
 ---
 

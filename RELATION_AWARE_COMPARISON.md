@@ -228,6 +228,189 @@ strict head ablation.
 
 ---
 
+## 1c. Weak-relation expansion + training dynamics (335 senses, 1794 closure)
+
+§1b 的结论是「弱关系的 test n 太小，既不能证实也不能证伪」。本轮做两件事：
+**(A)** 用 `seed_animal_kingdom_extended.sql` 把弱关系的 depth>=2 闭包补到统计可用；
+**(B)** 给 `train_closure_relaware.py` 加 `--relation-subset` / `--grad-mask` /
+`--early-stop rel_mrr` / `--grad-report-every`，使单关系可以隔离评估。
+§1b.6 遗留的基线缺失也在本轮补上：`train_closure_hardneg.py` 已在扩展图上重训。
+
+### 1c.1 Data expansion (Part A)
+
+新种子文件 `seed_animal_kingdom_extended.sql`，ID 段 **5081–5165**（85 义项），
+全部为动物领域，纯追加、零改既有行。设计要点是**造新源而不是堆边**：闭包切分
+按 source 做 disjoint，一个源的全部边只落进 train/val/test 之一，所以
+`test n ≈ 0.15 × 该关系的不同源个数`。
+
+| relation | 扩容前 depth>=2 | 扩容后 depth>=2 | 目标 | 达标 |
+|---|---:|---:|---:|:--:|
+| `can_do` | 178 | **529** | ≥50 | ✅ |
+| `has_property` | 75 | **129** | ≥50 | ✅ |
+| `typically_has` | 58 | **77** | ≥40 | ✅ |
+| `part_of` | 9 | **38** | ≥20 | ✅ |
+| `has_part` | 1 | **9** | ≥5 | ✅ |
+
+图谱规模（`apply_seeds.py` 实测，39 项自检全绿）：
+
+| 项 | 250 义项（§1b） | 335 义项（本节） |
+|---|---:|---:|
+| senses / words | 250 / — | **335 / 334** |
+| relations（义项级直边） | 477 | **694** |
+| closure 行 | 1090（d1 452 / d2 638） | **1794（d1 664 / d2 1130）** |
+| 消息边 | 1204 | **1713** |
+| relation types | 46 | 46 |
+
+test 逐关系正样本数（source-disjoint, seed 42）从
+`can_do 7 / has_property 3 / typically_has 1 / part_of 0 / has_part 0`
+变为 `can_do 59 / has_property 16 / typically_has 13 / part_of 2 / has_part 1`。
+**`part_of` 仍未达 ≥5 的目标**（38 条 depth>=2 分散在 16 个源上，test 只分到
+2 个源），这是切分口径的硬约束，不是数据量不足；再扩也只能靠增加 part_of 的
+**独立源**，见 §1c.5。
+
+### 1c.2 Paired baseline (重新训练，不再是 n/a)
+
+`train_closure_hardneg.py --epochs 200` 在扩展图上重训（24 epoch 早停）：
+test hard MRR **0.6883**、prior 0.5977、margin **+0.0906**（n=133, K=16.6）。
+全部五次运行共用同一 test 划分与同一硬负样本池，因此本节所有对比都是**配对**的。
+
+### 1c.3 Per-relation test metrics after expansion
+
+| relation | test n | full MRR | hard MRR | hard margin | 与 §1b 相比 |
+|---|---:|---:|---:|---:|---|
+| `is_a` | 50 | **0.5843** | 0.8825 | +0.3630 | n 44→50，margin +0.3713→+0.3630（持平） |
+| `has_property` | 16 | **0.3218** | 0.4396 | +0.1979 | n 3→**16**，margin +0.3889→+0.1979（n 变大后回落，真实值） |
+| `typically_has` | 13 | **0.2433** | 0.3285 | +0.0017 | n 1→**13**，此前的 1.0000 是小样本幻觉 |
+| `can_do` | 59 | **0.2089** | 0.6797 | **+0.0003** | margin −0.1429→**+0.0003**，**翻正** |
+| `part_of` | 2 | **0.5167** | 0.6667 | +0.1167 | 首次有 test 覆盖 |
+| `has_part` | 1 | 0.0037 | 0.1429 | +0.0000 | 仍只有 1 个 test 正样本 |
+
+整体（test，n=141）：
+
+| 指标 | hardneg 基线 | relaware |
+|---|---:|---:|
+| full MRR | 0.2793 | **0.3609** |
+| Hits@1 / @3 / @10 | 0.1418 / 0.3121 / 0.5887 | **0.2057 / 0.4184 / 0.7021** |
+| hard MRR | 0.6883 | **0.6938** |
+| hard margin | +0.0906 | **+0.1623** |
+| `猫 -> 生物` full rank | — | **#1**（准则要求 ≤ #3 ✅） |
+
+### 1c.4 Isolated `can_do` run (`--relation-subset`)
+
+隔离后只剩 1 个关系头、529 个正样本（train 359 / val 93 / test 77），
+关系头参数从 48,174 降到 2,049（1 个 `W_r` + `W_shared` + 门控），
+模型总计 215,137。
+
+| 运行 | epochs | test full MRR | test hard MRR | prior | hard margin |
+|---|---:|---:|---:|---:|---:|
+| §1b 联合训练（250 义项，n=7） | 66 | 0.3563 | 0.8571 | — | −0.1429 |
+| C1 联合训练（335 义项，n=59） | 33 | 0.2089 | 0.6797 | 0.6794 | +0.0003 |
+| **C2a 隔离 `can_do`（n=65）** | 44 | **0.2445** | **0.8923** | 0.7363 | **+0.1560** |
+| C2b 隔离 + `--grad-mask` + `--early-stop rel_mrr` | 41 | 0.2446 | **0.9000** | 0.7359 | **+0.1641** |
+
+隔离带来的收益是压倒性的：同一个关系，hard margin 从 **+0.0003 → +0.1560**，
+hard MRR 从 0.6797 → 0.8923。这说明 §1b 里 `can_do` 的低分主要来自**与其他关系
+共享编码器/优化目标时的相互干扰**，而不是 `can_do` 本身不可学。
+
+**两个必须说明的口径问题：**
+
+1. `can_do` 的 **full-catalogue** MRR 只有 0.2445，**没有达到「> 0.4」的成功准则**。
+   该指标在 335 个候选节点上排序，其 prior（源无关频次基线）本身就是 0.2316，
+   而 §1b 的 0.3563 是在 250 个候选、n=7 上测的，两者不可比。**达到 > 0.4 的是
+   hard-pool MRR（0.8923 / 0.9000）**。
+2. 隔离跑的 test 硬负池里，hardneg 基线（共享头）拿到 **1.0000** 的 hard MRR ——
+   即该池对频次先验已经饱和（prior 也是 1.0000），没有给任何模型留出空间。
+   因此这里可读的信号是 **prior-relative margin（+0.1560）与 full MRR（0.2445 vs
+   0.2418）**，不是绝对 hard MRR 的差值（−0.1077）。
+
+### 1c.5 Training dynamics (Part B)
+
+| 开关 | 作用 | 默认 |
+|---|---|---|
+| `--relation-subset REL...` | 正样本、切分、负样本池、`W_r` 头、全部指标收窄到子集；未知关系名直接报错并列出可用关系 | 关闭（全关系） |
+| `--grad-mask` | `loss.backward()` 之后、`optimizer.step()` 之前，清零「本批没有正样本」的关系头梯度；`W_shared` 仅在整批无共享路径关系时清零 | 关闭 |
+| `--early-stop {val_loss,rel_mrr}` + `--primary-relation` | 早停依据二选一：整体 val loss（旧行为）或主关系 val 硬池 MRR；后者单独保存 `closure_gat_relaware_best_<rel>.pt` 并优先用它做最终模型 | `val_loss` |
+| `--grad-report-every N` | 每 N 个 epoch 打印各关系头与共享头的平均 `|grad|`，据此判断共享头是否压过专属头 | 10 |
+
+**梯度掩码的实际作用（实测，不是推测）：**
+
+- **单关系子集下它是严格的 no-op**：`--relation-subset can_do --grad-mask`
+  与不带 `--grad-mask` 的两次运行逐位一致（epochs 44、best val loss 0.2015 @24、
+  test hard MRR 0.8923、margin +0.1560 完全相同），诊断行显示
+  `head-grads zeroed=0`。原因很直接：子集内每个批次的负样本与正样本同关系，
+  批次里总存在该类正样本。
+- **联合训练下它改变结果**：D1（全量 + `--grad-mask`）vs C1（全量）test hard MRR
+  0.7061 vs 0.6938，margin **+0.1911 vs +0.1623**，其中收益集中在弱关系：
+  `has_property` hard margin +0.1979 → **+0.3492**、`typically_has`
+  +0.0017 → **+0.1730**；代价是 `part_of`（n=2）+0.1167 → +0.0278、
+  `typically_has` full MRR 0.2433 → 0.1595。样本只有 1–2 个的关系上，
+  单次运行的涨落不应被读成结论。
+
+**梯度幅度诊断（C1 全量运行，`--grad-report-every 10`）：**
+
+| head | epoch 10（GAT 冻结中） | epoch 20（解冻后） | epoch 30 |
+|---|---:|---:|---:|
+| `W_r[is_a]` | 9.69e-05 | **1.42e-03** | 1.19e-03 |
+| `W_r[can_do]` | 5.98e-05 | 1.40e-03 | **1.52e-03** |
+| `W_r[has_property]` | 1.60e-05 | 7.47e-04 | 1.00e-03 |
+| `W_r[typically_has]` | 1.27e-05 | 7.89e-04 | 9.37e-04 |
+| `W_r[part_of]` | 2.03e-05 | 2.56e-04 | 2.31e-04 |
+| `W_r[has_part]` | 4.41e-06 | 3.71e-04 | 4.05e-04 |
+| `W_shared` | **0（无梯度）** | **0（无梯度）** | **0（无梯度）** |
+
+两个与原始假设相悖的发现：
+
+1. **`W_shared` 在整个训练中从未收到梯度。** 6 个有正样本的关系全部持有专属
+   `W_r`，没有任何批次走共享路径。所以「40 个未训练关系通过共享头注入噪声梯度、
+   拖累 `can_do`」这一假说**在本图上不成立** —— 噪声不来自 `W_shared`，
+   而来自**共享 GAT 编码器 + 联合优化**，这与 §1c.4 隔离后大涨的结果一致。
+2. **弱关系的梯度并没有被 `is_a` 淹没。** 解冻后量级同为 1e-3，到 epoch 30
+   `can_do` 的梯度已经超过 `is_a`。梯度的相对大小不是瓶颈，**样本量与负样本池
+   构造才是**。
+
+### 1c.6 Success-criteria check
+
+| 准则 | 要求 | 实测 | 判定 |
+|---|---|---|:--:|
+| `can_do` test MRR | > 0.4（原 0.3563） | hard-pool **0.8923**（隔离）/ 0.6797（联合）；full **0.2445** | ⚠️ 取决于口径，见 §1c.4 |
+| `can_do` hard-pool margin | > 0（原 −0.1429） | **+0.0003**（联合）/ **+0.1560**（隔离） | ✅ |
+| `has_property` test n | ≥ 10（原 3） | **16** | ✅ |
+| `part_of` test n | ≥ 5（原 0） | **2** | ❌ 见 §1c.1 |
+| `猫 -> 生物` rank | ≤ #3 | **#1** | ✅ |
+
+### 1c.7 Reproduction
+
+```bash
+# 1) 重建数据库（39 项自检；--keep 幂等）
+python apply_seeds.py logos.db
+python apply_seeds.py logos.db --keep
+
+# 2) 重新训练配对基线（扩展图，24 epoch 早停）
+python logos_transformer/train_closure_hardneg.py --epochs 200 \
+  --output-dir ./logos_transformer/checkpoints_hardneg_ext
+
+# 3) C1 全量（33 epoch 早停）
+python logos_transformer/train_closure_relaware.py --epochs 200 \
+  --output-dir ./logos_transformer/checkpoints_relaware_ext \
+  --compare-checkpoint ./logos_transformer/checkpoints_hardneg_ext/closure_gat_hardneg_best.pt
+
+# 4) D1 全量 + 梯度掩码
+python logos_transformer/train_closure_relaware.py --grad-mask --epochs 200 \
+  --output-dir ./logos_transformer/checkpoints_relaware_ext_mask \
+  --compare-checkpoint ./logos_transformer/checkpoints_hardneg_ext/closure_gat_hardneg_best.pt
+
+# 5) C2a 隔离 can_do / C2b 隔离 + 掩码 + 按关系早停
+python logos_transformer/train_closure_relaware.py --relation-subset can_do --epochs 200 \
+  --output-dir ./logos_transformer/checkpoints_relaware_cando
+python logos_transformer/train_closure_relaware.py --relation-subset can_do \
+  --grad-mask --early-stop rel_mrr --epochs 200 \
+  --output-dir ./logos_transformer/checkpoints_relaware_cando_mask
+```
+
+`checkpoints*/` 已加入 `.gitignore`：报告由脚本重新生成，不入库。
+
+---
+
 ## 2. Setup
 
 ### 2.1 Split and data

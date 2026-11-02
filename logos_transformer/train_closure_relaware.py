@@ -48,10 +48,38 @@ split exercises ``is_a``, ``can_do``, ``has_property`` and ``typically_has``.
 The report prints per-relation metrics so each trained head is evaluated on its
 own relation type rather than only on ``is_a``.
 
+v0.2 additions (weak-relation diagnosis)
+---------------------------------------
+Three problems made the previous run uninformative for the weak relations:
+
+1. ``can_do`` had 178 depth>=2 train positives but only 7 test ones, so a
+   margin of -0.1429 was noise, not a verdict;
+2. the shared head received gradient from 40 relation types that never appear
+   in a closure positive, so the only signal it could learn was "generic
+   plausibility";
+3. there was no way to train one relation type in isolation.
+
+This version adds:
+
+* ``--relation-subset``  keep only these relations' positives; the split, the
+  negative pools, the heads and the metrics all shrink to the subset, so
+  ``--relation-subset can_do`` is a clean single-relation experiment.
+* ``--grad-mask``        per-batch gradient masking.  A dedicated/gated head
+  whose relation has **no positive in the current batch** gets ``.grad = 0``,
+  and ``W_shared`` is masked when the batch contains no relation that actually
+  routes through it.  Off by default: the baseline protocol stays bit-identical.
+* ``--early-stop``       ``val_loss`` (default, unchanged) or ``rel_mrr``
+  (patience on the validation hard-pool MRR of ``--primary-relation``).
+* ``--grad-report-every`` prints the mean |gradient| of every dedicated head and
+  of ``W_shared``, which makes "the shared head dominates" measurable instead of
+  a guess.
+
 Usage
 -----
     python logos_transformer/train_closure_relaware.py --epochs 5   # smoke
     python logos_transformer/train_closure_relaware.py              # full run
+    python logos_transformer/train_closure_relaware.py \\
+        --relation-subset can_do --grad-mask --epochs 200
 
 Outputs
 -------
@@ -158,7 +186,7 @@ except ImportError:  # pragma: no cover
         summarize_pools,
     )
 
-RELAWARE_VERSION = "logos-gat-closure-relaware-v0.1"
+RELAWARE_VERSION = "logos-gat-closure-relaware-v0.2"
 DEFAULT_OUTPUT_DIR = "./logos_transformer/checkpoints_relaware"
 DEFAULT_COMPARE_CHECKPOINT = (
     "./logos_transformer/checkpoints_hardneg/closure_gat_hardneg_best.pt"
@@ -191,11 +219,18 @@ class RelationAwareClosurePredictor(nn.Module):
         hidden_dim: int,
         relation_names: Sequence[str],
         relation_counts: Dict[str, int],
+        head_relations: Optional[Sequence[str]] = None,
     ) -> None:
         super().__init__()
         self.gat = gat
         self.hidden_dim = hidden_dim
-        self.relation_names = list(relation_names)
+        # head_relations 非空时只给这些关系建 W_r（--relation-subset）；
+        # 其余关系在 _effective_matrix 里因为查不到 idx 而落到 W_shared，
+        # 语义与「0 个训练正样本」完全一致。
+        if head_relations is not None:
+            self.relation_names = [str(r) for r in head_relations]
+        else:
+            self.relation_names = list(relation_names)
         self.rel_to_idx = {name: i for i, name in enumerate(self.relation_names)}
 
         # 每种关系一个 32x32 矩阵；额外一个共享矩阵与一个门控标量。
@@ -277,6 +312,110 @@ class RelationAwareClosurePredictor(nn.Module):
             "unseen": unseen,
             "n_relation_types": len(self.relation_names),
         }
+
+
+# --------------------------------------------------------------------------- #
+# Training dynamics: gradient masking + per-head gradient diagnostics
+# --------------------------------------------------------------------------- #
+def mask_relation_gradients(
+    model: RelationAwareClosurePredictor,
+    batch: Sequence[Sample],
+) -> Dict[str, int]:
+    """Zero the gradients of heads that did not see a positive in this batch.
+
+    Two rules, both applied **after** ``loss.backward()`` and before
+    ``optimizer.step()``:
+
+    1. a relation with no positive in the batch contributes no supervision to
+       its own ``W_r`` / ``share_logit`` -- its gradient is noise from the
+       negative pairs of *other* relations, so it is zeroed;
+    2. ``W_shared`` is zeroed when no relation in the batch actually routes
+       through it (i.e. every relation present has a dedicated head).  When the
+       batch does contain shared-path relations, ``W_shared`` keeps its
+       gradient -- masking it there would delete real supervision.
+
+    Returns a small dict of counters for the epoch-level diagnostic.
+    """
+    positive_relations = {s.relation for s in batch if s.label == 1}
+    batch_relations = {s.relation for s in batch}
+    masked_heads = 0
+    for name in model.relation_names:
+        if name in positive_relations:
+            continue
+        masked_heads += 1
+        for param in (model.W_r[name], model.share_logit[name]):
+            if param.grad is not None:
+                param.grad.zero_()
+
+    uses_shared = any(
+        (name not in model.rel_to_idx)
+        or int(model.relation_count[model.rel_to_idx[name]].item()) < MIN_DEDICATED
+        for name in batch_relations
+    )
+    shared_masked = 0
+    if not uses_shared and model.W_shared.grad is not None:
+        model.W_shared.grad.zero_()
+        shared_masked = 1
+    return {"masked_heads": masked_heads, "shared_masked": shared_masked}
+
+
+def accumulate_grad_norms(
+    model: RelationAwareClosurePredictor,
+    acc: Dict[str, List[float]],
+    head_names: Sequence[str],
+) -> None:
+    """Add ``sum |grad|`` and the element count of each head into ``acc``.
+
+    ``acc[name] = [sum_abs, n_elements, n_batches]``.  Call right after
+    ``loss.backward()`` (and after masking) so the numbers describe what the
+    optimizer is about to apply.  ``head_names`` must be relations that actually
+    carry training positives -- the first N entries of the vocabulary are
+    usually untrained relations whose ``.grad`` is ``None``.
+    """
+    def _add(name: str, param: torch.nn.Parameter) -> None:
+        if param.grad is None:
+            return
+        slot = acc.setdefault(name, [0.0, 0.0, 0.0])
+        slot[0] += float(param.grad.detach().abs().sum())
+        slot[1] += float(param.grad.numel())
+        slot[2] += 1.0
+        return None
+
+    _add("W_shared", model.W_shared)
+    for name in head_names:
+        if name in model.W_r:
+            _add(f"W_r[{name}]", model.W_r[name])
+
+
+def grad_report_lines(
+    acc: Dict[str, List[float]],
+    epoch: int,
+    n_heads: int,
+) -> List[str]:
+    """Mean |grad| per head, sorted descending, for one diagnostic epoch."""
+    rows: List[Tuple[str, float]] = []
+    for name, (total, count, _batches) in acc.items():
+        if count <= 0:
+            continue
+        rows.append((name, total / count))
+    rows.sort(key=lambda item: -item[1])
+    if not rows:
+        return []
+    shared = next((g for n, g in rows if n == "W_shared"), None)
+    lines = [f"[grad] epoch {epoch:>3} | mean |grad| per head "
+             f"(top {min(n_heads + 1, len(rows))} of {len(rows)}):"]
+    for name, value in rows[: n_heads + 1]:
+        if shared is None:
+            note = "(shared head unused: no gradient)"
+        elif shared > 0:
+            note = f"(x{value / shared:.2f} vs shared)"
+        else:
+            note = "(shared grad ~0)"
+        lines.append(f"        {name:<28} {value:.3e}   {note}")
+    if shared is None:
+        lines.append("        W_shared                     "
+                     "0.000e+00   (no batch routed through it)")
+    return lines
 
 
 # --------------------------------------------------------------------------- #
@@ -772,11 +911,17 @@ def eval_bucket_relaware(
 # Report
 # --------------------------------------------------------------------------- #
 def _relation_count_rows(
-    graph: RelationGraph, train_positives: Sequence[Sample]
+    relation_names: Sequence[str], train_positives: Sequence[Sample]
 ) -> List[Dict[str, object]]:
+    """Per-relation train-positive counts and routing decision.
+
+    ``relation_names`` is the head vocabulary, not the graph vocabulary: under
+    ``--relation-subset`` the report only lists the relations that actually have
+    a head.
+    """
     counts = Counter(p.relation for p in train_positives)
     rows: List[Dict[str, object]] = []
-    for rel in graph.relation_names:
+    for rel in relation_names:
         c = counts.get(rel, 0)
         if c >= MIN_DEDICATED:
             kind = "dedicated W_r"
@@ -857,13 +1002,17 @@ def build_report(
     lines.append(f"closure rows         : {graph.stats['closure_rows']} "
                  f"(depth=1: {graph.stats['closure_depth1']}, "
                  f"depth>=2: {graph.stats['closure_deep']})")
-    lines.append(f"relation vocabulary  : {len(graph.relation_names)} types")
+    # 头词表在 --relation-subset 下小于 graph 词表，报表口径以实际建头数为准。
+    n_heads = len(relation_rows)
+    lines.append(f"relation vocabulary  : {len(graph.relation_names)} types"
+                 + (f" (head subset: {n_heads})" if n_heads != len(graph.relation_names)
+                    else ""))
     lines.append("")
     lines.append("--- Relation-aware scoring head ---")
     lines.append(f"score                : h_s^T W_r h_t   (per relation)")
-    lines.append(f"W_r matrices         : {len(graph.relation_names)} x "
+    lines.append(f"W_r matrices         : {n_heads} x "
                  f"{args.hidden}x{args.hidden} = "
-                 f"{len(graph.relation_names) * args.hidden * args.hidden:,} params")
+                 f"{n_heads * args.hidden * args.hidden:,} params")
     lines.append(f"W_shared             : {args.hidden}x{args.hidden} = "
                  f"{args.hidden * args.hidden:,} params")
     lines.append(f"dedicated threshold  : >= {MIN_DEDICATED} train positives -> W_r only")
@@ -1197,8 +1346,9 @@ def build_report(
     train_rel_counts = Counter(p.relation for p in train["pos"])   # type: ignore[arg-type]
     dedicated_rels = sorted(r for r, c in train_rel_counts.items() if c >= MIN_DEDICATED)
     gated_rels = sorted(r for r, c in train_rel_counts.items() if 0 < c < MIN_DEDICATED)
-    n_unseen = len(graph.relation_names) - len(dedicated_rels) - len(gated_rels)
-    lines.append(f"* {len(graph.relation_names)} relation types: {len(dedicated_rels)} "
+    n_head_vocab = len(relation_rows)
+    n_unseen = max(n_head_vocab - len(dedicated_rels) - len(gated_rels), 0)
+    lines.append(f"* {n_head_vocab} relation types: {len(dedicated_rels)} "
                  f"dedicated ({', '.join(dedicated_rels) or 'none'}); "
                  f"{len(gated_rels)} gated ({', '.join(gated_rels) or 'none'}); "
                  f"{n_unseen} use W_shared.")
@@ -1311,7 +1461,36 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--compare-checkpoint", type=pathlib.Path,
                         default=root / DEFAULT_COMPARE_CHECKPOINT,
                         help="hard-negative checkpoint evaluated on the same test pairs/pools")
+    parser.add_argument("--relation-subset", nargs="*", default=None,
+                        metavar="REL",
+                        help="只在这些关系上训练与评估（例如 can_do has_property）。"
+                             "切分、负样本池、W_r 头与全部指标都收窄到子集；"
+                             "子集外的关系既不出样本，也不建头。")
+    parser.add_argument("--grad-mask", action="store_true",
+                        help="按批次屏蔽「本批没有正样本」的关系头梯度，并在批次不含共享路径"
+                             "关系时屏蔽 W_shared。默认关闭，保证不带该开关时与旧基线一致。")
+    parser.add_argument("--early-stop", choices=("val_loss", "rel_mrr"), default="val_loss",
+                        help="早停依据：val_loss（默认，旧行为）或 rel_mrr（主关系的 val 硬池 MRR）")
+    parser.add_argument("--primary-relation", default=None,
+                        help="--early-stop rel_mrr 使用的关系；缺省取 --relation-subset 的唯一元素")
+    parser.add_argument("--grad-report-every", type=int, default=10,
+                        help="每 N 个 epoch 打印一次各关系头 / 共享头的平均梯度幅度（0=关闭）")
     args = parser.parse_args(argv)
+
+    if args.relation_subset is not None and not args.relation_subset:
+        parser.error("--relation-subset 至少要给一个关系名")
+    if args.grad_report_every < 0:
+        parser.error("--grad-report-every 必须 >= 0")
+    if args.early_stop == "rel_mrr":
+        resolved = args.primary_relation
+        if resolved is None and args.relation_subset and len(args.relation_subset) == 1:
+            resolved = args.relation_subset[0]
+        if resolved is None:
+            parser.error("--early-stop rel_mrr 需要 --primary-relation（或恰好一个 --relation-subset）")
+        args.primary_relation = resolved
+    if args.primary_relation and args.relation_subset \
+            and args.primary_relation not in args.relation_subset:
+        parser.error("--primary-relation 必须在 --relation-subset 内")
 
     if args.epochs < 1:
         parser.error("--epochs 必须 >= 1")
@@ -1380,6 +1559,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     finally:
         conn.close()
 
+    # --relation-subset：把正样本、切分、负样本池、W_r 头与全部指标收窄到子集。
+    # 图本身（消息边）保持完整，因为编码器仍需要全图上下文。
+    subset: Optional[List[str]] = None
+    if args.relation_subset is not None:
+        wanted = [str(r) for r in args.relation_subset]
+        known = set(graph.relation_names)
+        unknown = [r for r in wanted if r not in known]
+        if unknown:
+            print(f"[error] --relation-subset 含未知关系: {', '.join(unknown)}\n"
+                  f"        可用关系: {', '.join(sorted(known))}", file=sys.stderr)
+            return 1
+        subset = list(dict.fromkeys(wanted))
+        before = len(positives)
+        positives = [p for p in positives if p.relation in set(subset)]
+        kept = Counter(p.relation for p in positives)
+        if not positives:
+            print(f"[error] 关系子集 {subset} 在 closure 里没有 depth>=2 正样本",
+                  file=sys.stderr)
+            return 1
+        print(f"[relation-subset] {len(subset)} 个关系 | 正样本 {before} -> "
+              f"{len(positives)} | " + ", ".join(f"{r}={kept[r]}" for r in subset))
+
     total_sources = len({s.src for s in positives})
     if total_sources < 10:
         print(
@@ -1441,7 +1642,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         seed=args.seed,
     )
     model = RelationAwareClosurePredictor(
-        base_model, args.hidden, graph.relation_names, relation_counts
+        base_model, args.hidden, graph.relation_names, relation_counts,
+        head_relations=subset,
     )
     head_summary = model.head_summary()
 
@@ -1523,17 +1725,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     best_epoch = 0
     best_margin = float("-inf")
     best_margin_epoch = 0
+    best_rel = float("-inf")
+    best_rel_epoch = 0
     stale = 0
+    rel_stale = 0
     epochs_run = 0
     margin_history: List[Tuple[int, float, float, float, float]] = []
+    grad_history: Dict[int, Dict[str, float]] = {}
+
+    primary_val_pos = [
+        s for s in data["val"]["pos"]                       # type: ignore[union-attr]
+        if args.primary_relation and s.relation == args.primary_relation
+    ]
+    head_limit = min(6, len(model.W_r))
+    # 诊断只报「真的有训练正样本」的头，按正样本数降序取前 head_limit 个；
+    # 直接取关系词表前 N 个通常全是未训练关系，梯度恒为 None。
+    report_heads = sorted(
+        (r for r in model.relation_names if relation_counts.get(r, 0) > 0),
+        key=lambda r: (-relation_counts.get(r, 0), r),
+    )[:head_limit]
+    if args.early_stop == "rel_mrr" and not primary_val_pos:
+        print(f"[warning] --early-stop rel_mrr 但 val 里没有 {args.primary_relation} "
+              f"的正样本；退回 val_loss 早停。", file=sys.stderr)
+        args.early_stop = "val_loss"
 
     batch_rng = random.Random(args.seed + 1)
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / "closure_gat_relaware_best.pt"
     margin_checkpoint_path = output_dir / "closure_gat_relaware_best_margin.pt"
+    primary_slug = (args.primary_relation or "primary").replace("/", "_")
+    primary_checkpoint_path = output_dir / f"closure_gat_relaware_best_{primary_slug}.pt"
 
     for epoch in range(1, args.epochs + 1):
         epochs_run = epoch
+        want_grad_report = (
+            args.grad_report_every > 0 and epoch % args.grad_report_every == 0
+        )
+        grad_acc: Dict[str, List[float]] = {}
+        masked_head_total = 0
+        masked_shared_batches = 0
+
         if freeze_active and epoch == args.freeze_gat_epochs + 1:
             for param in model.gat.parameters():
                 param.requires_grad = True
@@ -1561,6 +1792,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             labels = labels_tensor(batch)
             loss = criterion(logits, labels)
             loss.backward()
+            # 梯度掩码必须在 backward 之后、step 之前；开启时才会改动梯度，
+            # 因此不带 --grad-mask 的运行与旧版本逐位一致。
+            if args.grad_mask:
+                masked = mask_relation_gradients(model, batch)
+                masked_head_total += masked["masked_heads"]
+                masked_shared_batches += masked["shared_masked"]
+            if want_grad_report:
+                accumulate_grad_norms(model, grad_acc, report_heads)
             optimizer.step()
             total_loss += float(loss.detach()) * len(batch)
             total += len(batch)
@@ -1602,6 +1841,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             best_margin_epoch = epoch
             torch.save(model.state_dict(), margin_checkpoint_path)
 
+        # --early-stop rel_mrr：只看主关系在 val 硬池上的 MRR 决定何时停。
+        rel_val_mrr: Optional[float] = None
+        if args.early_stop == "rel_mrr" and args.primary_relation:
+            rel_m = val_hard.by_relation.get(args.primary_relation) or {}
+            if rel_m.get("n"):
+                rel_val_mrr = float(rel_m.get("model_mrr", float("nan")))
+                if math.isnan(rel_val_mrr):
+                    rel_val_mrr = None
+        if rel_val_mrr is not None:
+            if rel_val_mrr > best_rel + 1e-6:
+                best_rel = rel_val_mrr
+                best_rel_epoch = epoch
+                rel_stale = 0
+                torch.save(model.state_dict(), primary_checkpoint_path)
+            else:
+                rel_stale += 1
+
         if val_hard.n_queries:
             hard_txt = (
                 f"hard-val MRR={_fmt(val_hard.model_mrr)} "
@@ -1612,18 +1868,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             hard_txt = "hard-val MRR=n/a (no eligible queries)"
         lr = optimizer.param_groups[0]["lr"]
+        rel_txt = ""
+        if rel_val_mrr is not None:
+            rel_txt = f" {args.primary_relation}MRR={_fmt(rel_val_mrr)}"
         print(f"epoch {epoch:>3}/{args.epochs} | train loss={train_loss:.4f} "
               f"acc={train_acc:.4f} | val loss={val_loss:.4f} acc={val_acc:.4f} | "
-              f"{hard_txt} | lr={lr:.2e}")
+              f"{hard_txt}{rel_txt} | lr={lr:.2e}")
 
-        if stale >= args.patience:
-            print(f"early stopping at epoch {epoch} (best epoch {best_epoch}, "
-                  f"val loss {best_val:.4f}; best val margin "
-                  f"{best_margin:+.4f} at epoch {best_margin_epoch})")
+        if want_grad_report and grad_acc:
+            for line in grad_report_lines(grad_acc, epoch, len(report_heads)):
+                print(line)
+            grad_history[epoch] = {
+                name: (total / count if count else float("nan"))
+                for name, (total, count, _nb) in grad_acc.items()
+            }
+            if args.grad_mask:
+                print(f"[grad-mask] epoch {epoch:>3} | "
+                      f"head-grads zeroed={masked_head_total} | "
+                      f"W_shared zeroed in {masked_shared_batches} batch(es)")
+
+        # 早停依据二选一：val_loss（旧行为）或主关系 val 硬池 MRR。
+        stop_reason: Optional[str] = None
+        if args.early_stop == "rel_mrr":
+            if rel_stale >= args.patience:
+                stop_reason = (f"{args.primary_relation} val MRR stale for "
+                               f"{rel_stale} epoch(s)")
+        elif stale >= args.patience:
+            stop_reason = f"val loss stale for {stale} epoch(s)"
+        if stop_reason:
+            print(f"early stopping at epoch {epoch} ({stop_reason})")
+            print(f"  best val loss {best_val:.4f} @ epoch {best_epoch} | "
+                  f"best val margin {best_margin:+.4f} @ epoch {best_margin_epoch}"
+                  + (f" | best {args.primary_relation} MRR {_fmt(best_rel)} "
+                     f"@ epoch {best_rel_epoch}"
+                     if args.early_stop == "rel_mrr" else ""))
             break
 
-    stopped_early = stale >= args.patience and epochs_run < args.epochs
-    if checkpoint_path.exists():
+    stopped_early = epochs_run < args.epochs
+    if args.early_stop == "rel_mrr" and primary_checkpoint_path.exists():
+        model.load_state_dict(_load_state(primary_checkpoint_path))
+    elif checkpoint_path.exists():
         model.load_state_dict(_load_state(checkpoint_path))
     model.eval()
 
@@ -1772,7 +2056,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pool_summary=pool_summary,
         sampling_stats=sampling_stats,
         relation_bands=relation_bands,
-        relation_rows=_relation_count_rows(graph, train_positives),
+        relation_rows=_relation_count_rows(model.relation_names, train_positives),
         best_epoch=best_epoch,
         best_val_loss=best_val,
         best_margin_epoch=best_margin_epoch,
