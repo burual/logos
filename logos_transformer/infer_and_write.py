@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import pathlib
 import sqlite3
 import sys
@@ -104,6 +105,13 @@ DEFAULT_CHECKPOINT_CANDIDATES: Tuple[str, ...] = (
     "./logos_transformer/checkpoints_relaware/closure_gat_relaware_best.pt",
 )
 
+# --calibrated 时的优先候选：cross-POS 重训 + 温度标定的产物（见 train_calibrated.py）。
+# 只在显式要求标定时才优先，以免默认行为被悄悄改掉（round-12 的写回数字靠默认路径复现）。
+CALIBRATED_CHECKPOINT_CANDIDATES: Tuple[str, ...] = (
+    "./logos_transformer/checkpoints_calibrated/closure_gat_calibrated_best.pt",
+    "./logos_transformer/checkpoints_calibrated/closure_gat_calibrated_untuned.pt",
+)
+
 # inferred_relations：模型假设的落库位置。刻意与 closure 分离。
 # 偏差说明：senses 的主键列名是 sense_id；senses 没有 name 列（名称在 words.word）。
 INFERRED_DDL = """
@@ -144,6 +152,10 @@ RELATION_LABEL = {
     "part_of": "属于（part_of）",
     "has_part": "组成部分（has_part）",
 }
+
+# 词性修正脚本：刻意不叫 seed_*.sql —— init_database 会 glob 该模式并把命中文件
+# 当作种子加载，那会连带改变下游所有测试的 ID 空间。这里必须由 --fix-pos 显式触发。
+POS_FIX_SQL = _ROOT / "fix_pos_annotations.sql"
 
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +279,342 @@ def apply_pos_guard(
     return kept, dropped
 
 
+# --------------------------------------------------------------------------- #
+# 符号守卫：源侧词性 / is_a 层级 / 关系方向 / 原子目标
+#
+# 四个守卫的判据全部从数据库自身读出（relations / closure / relation_types），
+# 没有一条关系名、词性或深度阈值是硬编码的。判据缺失时一律放行（abstain），
+# 所以「不误杀」是可审计的：每个守卫只在数据真的给出了矛盾证据时才否决。
+# --------------------------------------------------------------------------- #
+RelationMeta = Dict[str, Dict[str, object]]
+
+
+def load_relation_source_pos(conn: sqlite3.Connection) -> Dict[str, Dict[str, int]]:
+    """Observed (relation -> {source POS: count}) over the ``relations`` table.
+
+    Mirror image of :func:`load_relation_target_pos`: the target side was read off
+    ``closure`` (that is where the *expected type of the answer* lives), while the
+    source side can only come from the asserted edges.
+    """
+    out: Dict[str, Dict[str, int]] = collections.defaultdict(
+        lambda: collections.Counter()
+    )
+    for relation, pos in conn.execute(
+        """
+        SELECT r.relation, s.pos
+        FROM relations r JOIN senses s ON s.sense_id = r.src_id
+        WHERE r.src_kind = 'sense' AND r.dst_kind = 'sense' AND r.is_negated = 0
+        """
+    ):
+        out[str(relation)][str(pos)] += 1
+    return {relation: dict(counter) for relation, counter in out.items()}
+
+
+def compute_depth_map(conn: sqlite3.Connection) -> Dict[int, int]:
+    """sense_id -> MIN(is_a closure depth).  Senses outside the taxonomy are absent.
+
+    ``closure.depth`` is the hop count from ``descendant`` to ``ancestor``, so the
+    minimum over a sense's ancestors is its shortest distance to a root.
+
+    **This map must not be used as a specificity measure.** Because almost every
+    sense has a direct parent, ``MIN(depth)`` collapses to 1 for anything that is
+    not a root: on this database 141 of the 152 existing direct ``is_a`` edges have
+    ``MIN(depth)[src] == MIN(depth)[tgt]``, so a guard built on it would reject
+    them.  It is kept for diagnostics (see :func:`print_guard_calibration`) and as
+    the documented 口径 of the ``depth_estimate`` column, not as a guard input.
+    """
+    depths: Dict[int, int] = {}
+    for descendant, depth in conn.execute(
+        "SELECT descendant, MIN(depth) FROM closure "
+        "WHERE relation = 'is_a' GROUP BY descendant"
+    ):
+        depths[int(descendant)] = int(depth)
+    return depths
+
+
+def compute_specificity(
+    ancestors: Dict[int, Set[int]],
+    in_taxonomy: Set[int],
+) -> Dict[int, int]:
+    """sense_id -> number of is_a ancestors ("how specific is this sense").
+
+    This is the monotone counterpart of ``MIN(depth)``: adding ``src is_a tgt``
+    makes ``tgt`` (and everything above it) an ancestor of ``src``, so a genuine
+    edge always satisfies ``specificity[src] > specificity[tgt]`` -- strictly,
+    because ``tgt`` itself is not yet among ``src``'s ancestors.  Measured on
+    **152/152** existing direct ``is_a`` edges; ``MIN(depth)`` only satisfies
+    **11/152**.
+    """
+    return {sid: len(ancestors.get(sid, ())) for sid in in_taxonomy}
+
+
+def compute_ancestor_map(
+    conn: sqlite3.Connection,
+) -> Tuple[Dict[int, Set[int]], Set[int]]:
+    """(sense_id -> is_a ancestors, nodes participating in the is_a taxonomy).
+
+    The second element includes roots (which have no ancestors but are ancestors
+    of others), so that ``猫 is_a 生物`` is not silently exempted from the guard.
+    """
+    ancestors: Dict[int, Set[int]] = collections.defaultdict(set)
+    in_taxonomy: Set[int] = set()
+    for descendant, ancestor in conn.execute(
+        "SELECT descendant, ancestor FROM closure WHERE relation = 'is_a'"
+    ):
+        ancestors[int(descendant)].add(int(ancestor))
+        in_taxonomy.add(int(descendant))
+        in_taxonomy.add(int(ancestor))
+    return ancestors, in_taxonomy
+
+
+def load_relation_meta(conn: sqlite3.Connection) -> RelationMeta:
+    """relation -> {inverse, symmetric, taxonomic, transitive} from ``relation_types``.
+
+    Directionality is *declared by the schema*, not inferred from the data: every
+    relation carries ``inverse_of`` / ``is_symmetric``.  Deriving it from observed
+    edge pairs (the task's suggestion) would silently mis-classify relations whose
+    inverse simply has not been asserted yet -- ``part_of`` has 59 edges and
+    ``has_part`` 17, so "does the inverse exist somewhere" is not a property of the
+    relation at all.
+    """
+    meta: RelationMeta = {}
+    for relation, relation_class, inverse, symmetric, transitive in conn.execute(
+        "SELECT relation, relation_class, inverse_of, is_symmetric, is_transitive "
+        "FROM relation_types"
+    ):
+        meta[str(relation)] = {
+            "class": str(relation_class),
+            # 分类学关系：目标是「上位」，因此目标必须严格更浅（见 is_a_depth_guard）
+            "taxonomic": str(relation_class) == "层级" and inverse is None,
+            "inverse": str(inverse) if inverse else None,
+            "symmetric": bool(symmetric),
+            "transitive": bool(transitive),
+        }
+    return meta
+
+
+def load_taxonomy_children(conn: sqlite3.Connection) -> Set[int]:
+    """Senses that are the parent (ancestor) of at least one other sense in is_a.
+
+    Membership == "this is a category, not an atom".  Used by the atomic-target
+    guard, which asks the reverse question: is the *predicted* target a leaf?
+    """
+    return {
+        int(row[0])
+        for row in conn.execute("SELECT DISTINCT ancestor FROM closure WHERE relation = 'is_a'")
+    }
+
+
+def load_leaf_target_share(
+    conn: sqlite3.Connection,
+    children: Optional[Set[int]] = None,
+) -> Dict[str, float]:
+    """relation -> share of existing edges whose target is a leaf of the is_a tree.
+
+    A "leaf" is a sense that is nobody's ancestor.  Property-like relations point
+    at atoms (``有脊柱``, ``胡须``, ``潜水``); taxonomic relations point at
+    categories by definition.  Measuring the share per relation is what lets the
+    guard decide *which* relations demand an atomic target -- ``is_a`` scores
+    0.00 and is therefore never constrained, while ``has_property`` scores 0.99.
+    """
+    if children is None:
+        children = load_taxonomy_children(conn)
+
+    totals: Dict[str, int] = collections.Counter()
+    leaves: Dict[str, int] = collections.Counter()
+    for relation, target in conn.execute(
+        "SELECT relation, dst_id FROM relations "
+        "WHERE src_kind = 'sense' AND dst_kind = 'sense' AND is_negated = 0"
+    ):
+        totals[str(relation)] += 1
+        if int(target) not in children:
+            leaves[str(relation)] += 1
+    return {
+        relation: leaves[relation] / total
+        for relation, total in totals.items()
+        if total > 0
+    }
+
+
+def build_leaf_guard(shares: Dict[str, float], min_share: float) -> Set[str]:
+    """Relations whose observed targets are atomic enough to require a leaf target."""
+    return {relation for relation, share in shares.items() if share >= min_share}
+
+
+def is_a_depth_guard(
+    source_id: int,
+    target_id: int,
+    specificity: Dict[int, int],
+    ancestor_map: Dict[int, Set[int]],
+    in_taxonomy: Set[int],
+) -> bool:
+    """For is_a: reject unless the target is *strictly* less specific than the source.
+
+    Two necessary conditions for ``src is_a tgt``, both satisfied by **152/152**
+    existing direct is_a edges (measured, see GUARDS_EVALUATION.md §2):
+
+    1. ``spec[src] > spec[tgt]`` -- the parent sits strictly above the child in the
+       ancestor partial order;
+    2. ``ancestors(tgt) ⊆ ancestors(src)`` -- the parent's whole ancestry is also
+       the child's ancestry.
+
+    Condition 2 alone lets ``医学检测 is_a 影像特征`` through (both carry the
+    identical ancestor set ``{医学概念, 抽象概念}``); condition 1 catches it.
+    Condition 1 alone is weaker (any cross-branch edge with a depth gap passes),
+    hence both.
+
+    Abstains when either node is absent from the is_a taxonomy: outside the tree
+    there is no ordering to compare, and guessing would create false positives.
+    """
+    if source_id not in in_taxonomy or target_id not in in_taxonomy:
+        return True
+    if specificity.get(target_id, 0) >= specificity.get(source_id, 0):
+        return False
+    return ancestor_map.get(target_id, set()) <= ancestor_map.get(source_id, set())
+
+
+def direction_guard(
+    source_id: int,
+    relation: str,
+    target_id: int,
+    meta: RelationMeta,
+    direct_edges: Set[Tuple[int, str, int]],
+    closure_triples: Set[Tuple[int, str, int]],
+) -> Tuple[bool, str]:
+    """Reject a triple that contradicts a declared direction or closes a cycle.
+
+    Returns ``(ok, reason)`` where ``reason`` names the rule that fired, so the
+    report can attribute every rejection.
+
+    * symmetric relations are exempt (``synonym``, ``opposite`` …);
+    * ``inverse_of`` declared -> the same fact written backwards must not already
+      exist (``A part_of B`` vs ``B has_part A``);
+    * a reversed edge of the *same* relation -> the triple closes a cycle
+      (``A is_a B`` when ``B is_a A`` is already implied).
+    """
+    info = meta.get(relation, {})
+    if info.get("symmetric"):
+        return True, ""
+
+    inverse = info.get("inverse")
+    if inverse:
+        backwards = (target_id, str(inverse), source_id)
+        if backwards in direct_edges or backwards in closure_triples:
+            return False, f"inverse:{inverse}"
+
+    reversed_same = (target_id, relation, source_id)
+    if reversed_same in direct_edges or reversed_same in closure_triples:
+        return False, "reverse"
+    return True, ""
+
+
+def guard_calibration_lines(
+    is_a_edges: Sequence[Tuple[int, int]],
+    depth_map: Dict[int, int],
+    specificity: Dict[int, int],
+    ancestor_map: Dict[int, Set[int]],
+) -> List[str]:
+    """Calibrate the is_a criteria against every existing direct is_a edge.
+
+    The point is to make the choice of criterion falsifiable at runtime: if a
+    future seed changes the taxonomy so that ``MIN(depth)`` becomes usable, or so
+    that the adopted conditions stop holding, this block says so loudly instead of
+    letting the guard silently reject true edges.
+    """
+    total = len(is_a_edges)
+    if not total:
+        return []
+
+    def gt_depth(src: int, tgt: int) -> bool:
+        return depth_map.get(src, 0) > depth_map.get(tgt, 0)
+
+    def gt_spec(src: int, tgt: int) -> bool:
+        return specificity.get(src, 0) > specificity.get(tgt, 0)
+
+    def subset(src: int, tgt: int) -> bool:
+        return ancestor_map.get(tgt, set()) <= ancestor_map.get(src, set())
+
+    n_depth = sum(1 for s, t in is_a_edges if gt_depth(s, t))
+    n_spec = sum(1 for s, t in is_a_edges if gt_spec(s, t))
+    n_sub = sum(1 for s, t in is_a_edges if subset(s, t))
+    n_both = sum(1 for s, t in is_a_edges if gt_spec(s, t) and subset(s, t))
+
+    def mark(hits: int) -> str:
+        return "  <- 采纳" if hits == total else (
+            "  <- 不可用（会误杀真边）" if hits < total * 0.9 else "  <- 有反例"
+        )
+
+    return [
+        f"用 {total} 条既有 is_a 直接边标定判据（不通过 = 该条件会否决真边）：",
+        f"      MIN(depth) 严格递减      : {n_depth}/{total}{mark(n_depth)}",
+        f"      祖先集大小严格递增        : {n_spec}/{total}{mark(n_spec)}",
+        f"      祖先集被包含             : {n_sub}/{total}{mark(n_sub)}",
+        f"      两条同时成立             : {n_both}/{total}{mark(n_both)}",
+    ]
+
+
+def apply_symbolic_guards(
+    triples: Sequence[Tuple[int, str, int]],
+    *,
+    pos_of: Dict[int, str],
+    source_guard: Optional[Dict[str, Set[str]]],
+    hierarchical: bool,
+    relation_meta: RelationMeta,
+    specificity: Dict[int, int],
+    ancestor_map: Dict[int, Set[int]],
+    in_taxonomy: Set[int],
+    leaf_relations: Set[str],
+    children: Set[int],
+    direct_edges: Set[Tuple[int, str, int]],
+    closure_triples: Set[Tuple[int, str, int]],
+) -> Tuple[List[Tuple[int, str, int]], Dict[str, List[Tuple[int, str, int]]]]:
+    """Split candidates into (kept, {guard_name: dropped}).
+
+    Guards are independent and short-circuit in a fixed order so that the
+    attribution sums exactly to the number of candidates removed.  Order is chosen
+    by "cheapest / most obviously wrong first": source POS, then is_a depth, then
+    direction, then target atomicity.
+    """
+    kept: List[Tuple[int, str, int]] = []
+    dropped: Dict[str, List[Tuple[int, str, int]]] = {
+        "source_pos": [],
+        "is_a_depth": [],
+        "direction": [],
+        "leaf_target": [],
+    }
+
+    for source_id, relation, target_id in triples:
+        if source_guard is not None:
+            allowed = source_guard.get(relation)
+            if allowed is not None and pos_of.get(source_id) not in allowed:
+                dropped["source_pos"].append((source_id, relation, target_id))
+                continue
+
+        if hierarchical and relation_meta.get(relation, {}).get("taxonomic"):
+            if not is_a_depth_guard(
+                source_id, target_id, specificity, ancestor_map, in_taxonomy
+            ):
+                dropped["is_a_depth"].append((source_id, relation, target_id))
+                continue
+
+        if hierarchical:
+            ok, _reason = direction_guard(
+                source_id, relation, target_id, relation_meta,
+                direct_edges, closure_triples,
+            )
+            if not ok:
+                dropped["direction"].append((source_id, relation, target_id))
+                continue
+
+        if relation in leaf_relations and target_id in children:
+            # children 的成员 == 「还是别人的上位」== 是类别而非原子值
+            dropped["leaf_target"].append((source_id, relation, target_id))
+            continue
+
+        kept.append((source_id, relation, target_id))
+    return kept, dropped
+
+
 def limit_per_group(
     scored: Sequence[Tuple[int, str, int, float]],
     max_per_group: int,
@@ -303,6 +651,37 @@ def _torch_load(path: pathlib.Path):
         return torch.load(path, map_location="cpu")
 
 
+def checkpoint_temperature(
+    state: Dict[str, "torch.Tensor"],
+    path: Optional[pathlib.Path] = None,
+) -> Optional[float]:
+    """Recover the fitted temperature, if the checkpoint carries one.
+
+    Two sources, in order: the ``temperature`` buffer written by
+    ``train_calibrated.CalibratedClosurePredictor``, then a ``calibration.json``
+    sidecar in the same directory.  Old (uncalibrated) checkpoints have neither
+    and return ``None`` -- the caller must not silently treat that as ``T = 1``
+    when the user explicitly asked for calibration.
+    """
+    tensor = state.get("temperature")
+    if tensor is not None:
+        try:
+            return float(tensor.reshape(-1)[0].item())
+        except (AttributeError, IndexError):  # pragma: no cover - 形状异常
+            pass
+    if path is not None:
+        sidecar = path.parent / "calibration.json"
+        if sidecar.exists():
+            try:
+                payload = json.loads(sidecar.read_text(encoding="utf-8"))
+                value = payload.get("temperature", {}).get("applied")
+                if value is not None:
+                    return float(value)
+            except (json.JSONDecodeError, OSError, AttributeError, TypeError):
+                pass
+    return None
+
+
 def inspect_checkpoint(state: Dict[str, "torch.Tensor"]) -> Dict[str, object]:
     """Recover the architecture from a plain ``state_dict`` (fully self-describing)."""
     if "gat.node_embedding.weight" not in state:
@@ -334,23 +713,30 @@ def inspect_checkpoint(state: Dict[str, "torch.Tensor"]) -> Dict[str, object]:
         "num_edge_types": num_edge_types,
         "head_names": head_names,
         "counts": count_list,
+        "temperature": checkpoint_temperature(state),
     }
 
 
 def resolve_checkpoint(
     explicit: Optional[pathlib.Path],
     wanted_relations: Sequence[str],
+    prefer_calibrated: bool = False,
 ) -> Tuple[pathlib.Path, Dict[str, object], str]:
     """Pick a checkpoint and return (path, info, reason).
 
     Explicit ``--checkpoint`` always wins (the caller may know better); the
     automatic path prefers the checkpoint whose ``W_r`` heads cover the most of
-    the requested relations.
+    the requested relations.  ``prefer_calibrated`` only changes *which* list is
+    tried first.
     """
-    candidates: List[pathlib.Path] = (
-        [explicit] if explicit is not None
-        else [_ROOT / c for c in DEFAULT_CHECKPOINT_CANDIDATES]
-    )
+    if explicit is not None:
+        candidates: List[pathlib.Path] = [explicit]
+    elif prefer_calibrated:
+        candidates = [_ROOT / c for c in CALIBRATED_CHECKPOINT_CANDIDATES] + [
+            _ROOT / c for c in DEFAULT_CHECKPOINT_CANDIDATES
+        ]
+    else:
+        candidates = [_ROOT / c for c in DEFAULT_CHECKPOINT_CANDIDATES]
 
     existing = [p for p in candidates if p.exists()]
     if not existing:
@@ -438,7 +824,16 @@ def build_and_load(
         head_relations=head_names,
     )
     try:
-        model.load_state_dict(_torch_load(path))
+        # 标定过的 checkpoint 多一个 temperature 缓冲；基类没有这个键，
+        # strict 装载会报「unexpected key」，所以先按模型自身的键表过滤。
+        raw_state = _torch_load(path)
+        own_keys = set(model.state_dict())
+        filtered = {k: v for k, v in raw_state.items() if k in own_keys}
+        dropped = sorted(set(raw_state) - own_keys)
+        model.load_state_dict(filtered)
+        if dropped:
+            print(f"    [注] checkpoint 里有 {len(dropped)} 个非模型键被忽略："
+                  f"{', '.join(dropped)}")
     except RuntimeError as exc:
         print(f"[错误] 权重装载失败（结构不匹配）：{exc}", file=sys.stderr)
         raise SystemExit(1)
@@ -606,15 +1001,20 @@ def encode_graph(
 
 
 @torch.no_grad()
-def score_triples(
+def score_triples_logits(
     model: RelationAwareClosurePredictor,
     graph: RelationGraph,
     triples: Sequence[Tuple[int, str, int]],
     h: Optional[torch.Tensor] = None,
-) -> List[float]:
-    """sigmoid(h_s^T W_r h_t) for every triple; encodes the graph at most once."""
+) -> torch.Tensor:
+    """Raw logits ``h_s^T W_r h_t`` for every triple; encodes the graph at most once.
+
+    Logits (not sigmoid probabilities) are returned so temperature scaling can be
+    applied afterwards without recomputing anything: both the raw and the
+    calibrated view are monotone transforms of the same tensor.
+    """
     if not triples:
-        return []
+        return torch.zeros(0)
     if h is None:
         h = encode_graph(model, graph)
 
@@ -624,17 +1024,30 @@ def score_triples(
             (pos, graph.id_to_index[src], graph.id_to_index[target])
         )
 
-    scores = [0.0] * len(triples)
+    out = torch.zeros(len(triples), dtype=torch.float32)
     for relation, items in by_relation.items():
         matrix = model.score_all(h, relation)  # (N, N) 全矩阵，一次 matmul
         positions = torch.tensor([i[0] for i in items], dtype=torch.long)
         rows = torch.tensor([i[1] for i in items], dtype=torch.long)
         cols = torch.tensor([i[2] for i in items], dtype=torch.long)
-        logits = matrix[rows, cols]
-        probs = torch.sigmoid(logits)
-        for pos, value in zip(positions.tolist(), probs.tolist()):
-            scores[pos] = float(value)
-    return scores
+        out[positions] = matrix[rows, cols]
+    return out
+
+
+@torch.no_grad()
+def score_triples(
+    model: RelationAwareClosurePredictor,
+    graph: RelationGraph,
+    triples: Sequence[Tuple[int, str, int]],
+    h: Optional[torch.Tensor] = None,
+    temperature: float = 1.0,
+) -> List[float]:
+    """sigmoid(logit / T) for every triple; ``T = 1`` is the raw model."""
+    logits = score_triples_logits(model, graph, triples, h=h)
+    if logits.numel() == 0:
+        return []
+    probs = torch.sigmoid(logits / max(float(temperature), 1e-6))
+    return [float(v) for v in probs.tolist()]
 
 
 # --------------------------------------------------------------------------- #
@@ -671,12 +1084,48 @@ def write_rows(
     return conn.total_changes - before
 
 
+def apply_pos_fixes(
+    db_path: pathlib.Path,
+    sql_path: pathlib.Path = POS_FIX_SQL,
+) -> Tuple[int, str]:
+    """Run ``fix_pos_annotations.sql``; returns ``(rows_changed, message)``.
+
+    The statement is a plain ``UPDATE`` so it is idempotent by construction: a
+    second run changes nothing.  Note that re-seeding reverts it -- the seeds are
+    the source of truth for ``pos``, and this file is an explicit override, applied
+    by ``--fix-pos`` at inference time rather than baked into the schema.
+    """
+    if not sql_path.exists():
+        return 0, f"找不到词性修正脚本：{sql_path}"
+    script = sql_path.read_text(encoding="utf-8")
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # 不能用 conn.total_changes：senses 上有 FTS 同步触发器
+        # （tr_senses_fts_au），一次 UPDATE 会连带写入 FTS 影子表，
+        # total_changes 会虚报成 9~14 行。改为直接对比 pos 快照。
+        before = dict(conn.execute("SELECT sense_id, pos FROM senses"))
+        conn.executescript(script)
+        conn.commit()
+        after = dict(conn.execute("SELECT sense_id, pos FROM senses"))
+    finally:
+        conn.close()
+    changed = sum(1 for sid, pos in after.items() if before.get(sid) != pos)
+    return changed, f"已应用 {sql_path.name}（改动 {changed} 个义项）"
+
+
 # --------------------------------------------------------------------------- #
 # 报表
 # --------------------------------------------------------------------------- #
 def _bar(value: float, width: int = 24) -> str:
     filled = int(round(max(0.0, min(1.0, value)) * width))
     return "#" * filled + "." * (width - filled)
+
+
+def _pct(part: int, whole: int) -> str:
+    """``part`` as a percentage of ``whole``, ``n/a`` instead of dividing by zero."""
+    if whole <= 0:
+        return "n/a"
+    return f"{part / whole * 100:.1f}%"
 
 
 def _fmt_name(labels: Dict[int, Tuple[str, str]], sense_id: int) -> str:
@@ -749,6 +1198,7 @@ def print_sanity(
     anchor_word: str = "猫",
     anchor_target: str = "生物",
     top_k: int = 4,
+    temperature: float = 1.0,
 ) -> None:
     """Show the model's raw ranking over *all* nodes for one anchor sense.
 
@@ -770,7 +1220,7 @@ def print_sanity(
     print(f"  [抽查] 「{anchor_word}」在全量 {len(labels)} 节点上的偏好（已存在的闭包边标注 *）")
     for relation in relations:
         matrix = model.score_all(h, relation)[src_idx]
-        probs = torch.sigmoid(matrix)
+        probs = torch.sigmoid(matrix / max(float(temperature), 1e-6))
         # 排除自身，取前 top_k
         order = torch.argsort(probs, descending=True).tolist()
         printed = 0
@@ -906,9 +1356,34 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                              "模型按排名而非概率验证，σ 会饱和，故用列表长度而非绝对值兜底。")
     parser.add_argument("--epoch", type=int, default=None,
                         help="写入 epoch 列；checkpoint 本身不含训练元数据，缺省写 NULL")
+    parser.add_argument("--calibrated", action="store_true",
+                        help="对打分做温度标定：sigmoid(logit / T)。T 优先取 --temperature，"
+                             "其次取 checkpoint 的 temperature 缓冲 / 同目录 calibration.json；"
+                             "两者都没有时退回 T=1 并给出警告。同时打印同一阈值下"
+                             "「未标定 vs 已标定」的写入量对比。")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="手动指定温度，覆盖 checkpoint 里的值（隐含 --calibrated）")
     parser.add_argument("--seed", type=int, default=42,
                         help="重建模型时的初始化种子（只为可复现，权重随后被覆盖）")
+    parser.add_argument("--source-pos-guard", action="store_true",
+                        help="源侧词性守卫：源词性在该关系的既有源侧分布中占比低于 "
+                             "--pos-min-share 时丢弃该候选（分布由 relations+senses 读出）")
+    parser.add_argument("--hierarchical-guard", action="store_true",
+                        help="层级/方向守卫：分类学关系要求目标严格更浅（深度递减且祖先集被包含），"
+                             "并禁止与已声明的逆关系或反向边冲突的三元组（依据 relation_types）")
+    parser.add_argument("--leaf-target-guard", action="store_true",
+                        help="原子目标守卫：目标必须是 is_a 叶子；只对「既有目标几乎全是叶子」"
+                             "的关系生效（阈值 --leaf-min-share）")
+    parser.add_argument("--leaf-min-share", type=float, default=0.95,
+                        help="判定「该关系要求原子目标」的最低叶子占比，默认 0.95")
+    parser.add_argument("--fix-pos", action="store_true",
+                        help="推理前应用 fix_pos_annotations.sql（幂等 UPDATE，写 senses.pos）")
     args = parser.parse_args(argv)
+
+    if args.temperature is not None:
+        if args.temperature <= 0:
+            parser.error("--temperature 必须 > 0")
+        args.calibrated = True
 
     if not (0.0 <= args.min_confidence <= 1.0):
         parser.error("--min-confidence 必须在 [0, 1]")
@@ -926,6 +1401,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("--relation-subset 至少要给一个关系名")
     if not args.strategies:
         parser.error("--strategies 至少要给一个策略")
+    if not (0.0 <= args.leaf_min_share <= 1.0):
+        parser.error("--leaf-min-share 必须在 [0, 1]")
     return args
 
 
@@ -945,6 +1422,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"[错误] 找不到数据库：{db_path}", file=sys.stderr)
         print("       先运行：python apply_seeds.py", file=sys.stderr)
         return 1
+
+    # ---- 词性修正（显式动作，先于任何读取）-------------------------------- #
+    if args.fix_pos:
+        changed, message = apply_pos_fixes(db_path)
+        print(f"[词性修正] {message}")
+        if args.dry_run:
+            print("          注意：--dry-run 不抑制 --fix-pos —— 词性修正是显式动作，"
+                  "会写 senses.pos。")
 
     # ---- 只读阶段：先把要推断的关系与候选算清楚 --------------------------- #
     ro = sqlite3.connect(str(db_path))
@@ -1004,6 +1489,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             unique.append(triple)
         candidates = unique
         target_pos = load_relation_target_pos(ro)
+        source_pos = load_relation_source_pos(ro)
+        depth_map = compute_depth_map(ro)
+        ancestor_map, in_taxonomy = compute_ancestor_map(ro)
+        specificity = compute_specificity(ancestor_map, in_taxonomy)
+        is_a_edges = [
+            (int(r[0]), int(r[1]))
+            for r in ro.execute(
+                "SELECT src_id, dst_id FROM relations WHERE relation = 'is_a' "
+                "AND src_kind = 'sense' AND dst_kind = 'sense'"
+            )
+        ]
+        children = load_taxonomy_children(ro)
+        leaf_shares = load_leaf_target_share(ro, children)
+        relation_meta = load_relation_meta(ro)
     finally:
         ro.close()
 
@@ -1017,6 +1516,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     n_raw = len(candidates)
     if guard:
         candidates, dropped_by_pos = apply_pos_guard(candidates, pos_of, guard)
+
+    # ---- 符号守卫（全部 opt-in）------------------------------------------- #
+    # 注意：这里只做「判定」，不立刻从 candidates 里删 —— 打分函数
+    # score_triples_logits 内部对每个关系算一次 N×N 全矩阵，候选条数几乎不影响
+    # 计算量。保留被否决的候选一起打分，才能在报表里给出精确的
+    # 「不加守卫本会写多少」对照，而不是拍一个估算值。
+    source_guard = (
+        build_pos_guard(source_pos, args.pos_min_share)
+        if args.source_pos_guard
+        else None
+    )
+    leaf_relations = (
+        build_leaf_guard(leaf_shares, args.leaf_min_share)
+        if args.leaf_target_guard
+        else set()
+    )
+    guarded_triples, dropped_by_guard = apply_symbolic_guards(
+        candidates,
+        pos_of=pos_of,
+        source_guard=source_guard,
+        hierarchical=args.hierarchical_guard,
+        relation_meta=relation_meta,
+        specificity=specificity,
+        ancestor_map=ancestor_map,
+        in_taxonomy=in_taxonomy,
+        leaf_relations=leaf_relations,
+        children=children,
+        direct_edges=set(edges),
+        closure_triples=closure_triples,
+    )
+    kept_set: Set[Tuple[int, str, int]] = set(guarded_triples)
 
     naive = len(labels) * len(labels) * max(len(tracked), 1)
     print("=" * 92)
@@ -1066,11 +1596,71 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             allowed = sorted(guard.get(relation, ()))
             print(f"    {relation:<16} {dist:<26} -> 允许 {','.join(allowed) or '(不限)'}")
 
+    # ---- 符号守卫报表 ------------------------------------------------------ #
+    n_guarded = len(guarded_triples)
+    if source_guard is not None or args.hierarchical_guard or leaf_relations:
+        print()
+        print("  [符号守卫] 判据全部来自数据库（relations / closure / relation_types）：")
+        if source_guard is not None:
+            n_src_drop = len(dropped_by_guard["source_pos"])
+            print(f"    源侧词性   : 剔除 {n_src_drop:,} 条"
+                  f"（{_pct(n_src_drop, len(candidates))}）"
+                  f"  阈值 pos 占比 >= {args.pos_min_share:.2f}")
+            for relation in requested:
+                counts = source_pos.get(relation, {})
+                total = sum(counts.values()) or 1
+                dist = "  ".join(
+                    f"{pos}:{count / total * 100:.0f}%"
+                    for pos, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                )
+                allowed = sorted(source_guard.get(relation, ()))
+                print(f"      {relation:<16} {dist:<24} -> 允许 {','.join(allowed) or '(不限)'}")
+        if args.hierarchical_guard:
+            n_depth = len(dropped_by_guard["is_a_depth"])
+            n_dir = len(dropped_by_guard["direction"])
+            print(f"    层级深度   : 剔除 {n_depth:,} 条（{_pct(n_depth, len(candidates))}）"
+                  f"  分类学关系要求「祖先集大小严格递增 + 祖先集被包含」")
+            for line in guard_calibration_lines(
+                is_a_edges, depth_map, specificity, ancestor_map
+            ):
+                print(f"      {line}")
+            print(f"    方向       : 剔除 {n_dir:,} 条（{_pct(n_dir, len(candidates))}）"
+                  f"  禁止与已声明逆关系 / 反向边冲突")
+        if leaf_relations:
+            n_leaf = len(dropped_by_guard["leaf_target"])
+            print(f"    原子目标   : 剔除 {n_leaf:,} 条（{_pct(n_leaf, len(candidates))}）"
+                  f"  生效关系 {', '.join(sorted(leaf_relations))}")
+        print(f"    合计放行   : {n_guarded:,} / {len(candidates):,} 条"
+              f"（{_pct(n_guarded, len(candidates))}）")
+    else:
+        print()
+        print("  [符号守卫] 全部关闭（--source-pos-guard / --hierarchical-guard /"
+              " --leaf-target-guard）")
+
     # ---- checkpoint + 图 --------------------------------------------------- #
-    checkpoint, info, reason = resolve_checkpoint(args.checkpoint, requested)
+    checkpoint, info, reason = resolve_checkpoint(
+        args.checkpoint, requested, prefer_calibrated=args.calibrated
+    )
     if not checkpoint.exists():  # pragma: no cover - resolve 已保证
         print(f"[错误] checkpoint 不存在：{checkpoint}", file=sys.stderr)
         return 1
+
+    # 温度解析：显式 > checkpoint 缓冲 > 同目录 calibration.json > 1.0
+    temperature = 1.0
+    temperature_source = "无标定（T = 1）"
+    if args.calibrated:
+        if args.temperature is not None:
+            temperature = float(args.temperature)
+            temperature_source = "--temperature 显式指定"
+        elif info.get("temperature") is not None:
+            temperature = float(info["temperature"])  # type: ignore[arg-type]
+            temperature_source = "checkpoint 的 temperature 缓冲"
+        else:
+            temperature_source = "该 checkpoint 不含温度，退回 T = 1"
+            print("[警告] --calibrated 但该 checkpoint 不含温度信息，T 退回 1.0。"
+                  "\n       标定模型见 train_calibrated.py 的 checkpoints_calibrated/ 产物。",
+                  file=sys.stderr)
+
     print()
     print("  [模型]")
     print(f"    checkpoint             : {checkpoint}")
@@ -1080,6 +1670,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"    专属 W_r 头            : {len(info['head_names'])} 个 -> "
           f"{', '.join(info['head_names'][:8])}"
           + (" ..." if len(info['head_names']) > 8 else ""))
+    print(f"    温度 T                 : {temperature:.4f}（{temperature_source}）"
+          + ("  [标定已启用]" if args.calibrated else "  [未标定]"))
 
     print()
     print("  [构建图]")
@@ -1095,22 +1687,87 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print()
     print("  [打分]")
     h = encode_graph(model, graph)
-    scores = score_triples(model, graph, candidates, h=h)
+    logits = score_triples_logits(model, graph, candidates, h=h)
+    raw_probs = torch.sigmoid(logits).tolist()
+    cal_probs = torch.sigmoid(logits / max(temperature, 1e-6)).tolist()
+    probs = cal_probs if args.calibrated else raw_probs
     scored = [
         (src, relation, target, confidence)
-        for (src, relation, target), confidence in zip(candidates, scores)
+        for (src, relation, target), confidence in zip(candidates, probs)
     ]
     scored.sort(key=lambda item: (-item[3], item[1], item[0], item[2]))
 
     epochs_note = args.epoch if args.epoch is not None else "NULL"
     model_version = f"{RELAWARE_VERSION}@{checkpoint.parent.name}"
+    if args.calibrated:
+        model_version += f"+T{temperature:.4f}"
 
     above = [t for t in scored if t[3] >= args.min_confidence]
-    gated = limit_per_group(above, args.max_per_source_relation)
+    # 「不加符号守卫本会写多少」：刻意在同一次打分结果上取，不是估算 ——
+    # 因为被否决的候选也已打分，两个计数只差一个集合判定。
+    gated_unfiltered = limit_per_group(above, args.max_per_source_relation)
+    above_guarded = [t for t in above if (t[0], t[1], t[2]) in kept_set]
+    gated = limit_per_group(above_guarded, args.max_per_source_relation)
+
+    if len(guarded_triples) != len(candidates):
+        kept_rows = {(s, r, t) for s, r, t, _c in gated}
+        base_rows = {(s, r, t) for s, r, t, _c in gated_unfiltered}
+        promoted = len(kept_rows - base_rows)
+        reason_of = {
+            triple: name
+            for name, items in dropped_by_guard.items()
+            for triple in items
+        }
+        killed_by: Dict[str, List[float]] = collections.defaultdict(list)
+        for src, relation, target, confidence in gated_unfiltered:
+            reason = reason_of.get((src, relation, target))
+            if reason:
+                killed_by[reason].append(confidence)
+        print()
+        print("  [守卫效果]")
+        print(f"    阈值 {args.min_confidence:.2f} 以上的候选 : "
+              f"不加守卫 {len(above):,} 条 / 加守卫 {len(above_guarded):,} 条")
+        print(f"    每组 top-{args.max_per_source_relation} 后写入 : "
+              f"{len(gated_unfiltered):,} 行 -> {len(gated):,} 行"
+              f"（{_pct(len(gated), len(gated_unfiltered))}）")
+        label = {"source_pos": "源侧词性", "is_a_depth": "层级深度",
+                 "direction": "方向", "leaf_target": "原子目标"}
+        detail = "  ".join(
+            f"{label.get(name, name)} {len(values)} 行"
+            for name, values in sorted(killed_by.items(), key=lambda kv: -len(kv[1]))
+        )
+        print(f"    被砍掉的既有假设 : {detail or '无'}")
+        if killed_by:
+            killed_conf = [c for values in killed_by.values() for c in values]
+            kept_conf = [c for _s, _r, _t, c in gated]
+            print(f"    平均置信度       : 留下 {sum(kept_conf) / max(len(kept_conf), 1):.4f}"
+                  f" / 砍掉 {sum(killed_conf) / len(killed_conf):.4f}"
+                  "（砍掉的更高，说明错的就是最自信的那批）")
+        print(f"    其中 {promoted} 行是「补位」进来的：守卫砍掉该组最优假设后，"
+              f"原本排第 {args.max_per_source_relation + 1} 位的假设顶上。"
+              "故行数降幅小于否决条数。")
+
+    # 同一阈值下的「未标定 vs 已标定」对比：温度是单调变换，所以能动的只有
+    # 「跨过阈值的那一部分」，条数下降不代表错误减少 —— 这一点必须打出来。
+    if args.calibrated and abs(temperature - 1.0) > 1e-9:
+        raw_above = [t for (s, r, tg), t in zip(candidates, raw_probs)
+                     if t >= args.min_confidence]
+        raw_gated = limit_per_group(
+            [(s, r, tg, t) for (s, r, tg), t in zip(candidates, raw_probs)
+             if t >= args.min_confidence],
+            args.max_per_source_relation,
+        )
+        print(f"    温度标定 T={temperature:.4f}：阈值 {args.min_confidence:.2f} 下 "
+              f"未标定 {len(raw_above):,} 行 / 已标定 {len(above):,} 行；"
+              f"每组 top-{args.max_per_source_relation} 后 "
+              f"{len(raw_gated):,} -> {len(gated):,} 行")
+        print("    （T 严格单调：排序不变，改的只是「落在阈值哪一侧」，"
+              "不等于错误变少）")
 
     print_sanity(
         model=model, graph=graph, h=h, labels=labels,
         closure_triples=closure_triples, relations=requested,
+        temperature=temperature,
     )
 
     print_summary(
