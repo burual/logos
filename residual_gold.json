@@ -1,0 +1,1332 @@
+{
+  "version": 1,
+  "generated_by": "logos_transformer/make_residual_gold.py",
+  "db": "C:\\Users\\sduso\\WorkBuddy\\数据库logos\\logos.db",
+  "note": "verdict 为人工判定；correct vs (wrong + wrong_relation) 用于算分离度。uncertain 两边都不计。control=true 的条目取自 relations 表的既有断言。",
+  "rules": {
+    "correct": "三元组成立（动物学事实 / 库内既有用法一致）",
+    "wrong": "事实或类型错误",
+    "wrong_relation": "src 与 tgt 之间确有语义关系，但关系名用错（本库多为 typically_has 承接了属性词）",
+    "uncertain": "判定本身有争议，不计入正确也不计入错误"
+  },
+  "counts": {
+    "correct": 13,
+    "wrong": 67,
+    "uncertain": 9,
+    "wrong_relation": 29
+  },
+  "items": [
+    {
+      "source": "人",
+      "source_pos": "n",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.999934,
+      "verdict": "correct",
+      "reason": "人具备潜水能力（施事→动作，与 猫 can_do 捕猎 同型）"
+    },
+    {
+      "source": "人",
+      "source_pos": "n",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.999859,
+      "verdict": "wrong",
+      "reason": "「跃出水面」是水生动物特化动作，人无此能力"
+    },
+    {
+      "source": "人",
+      "source_pos": "n",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.999812,
+      "verdict": "correct",
+      "reason": "人具备攀爬能力（施事→动作）"
+    },
+    {
+      "source": "防御",
+      "source_pos": "n",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.998632,
+      "verdict": "wrong",
+      "reason": "防御∈行为类，潜水∈运动类，无分类关系"
+    },
+    {
+      "source": "防御",
+      "source_pos": "n",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.997642,
+      "verdict": "wrong",
+      "reason": "防御与「跃出水面」无分类关系"
+    },
+    {
+      "source": "防御",
+      "source_pos": "n",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.997256,
+      "verdict": "wrong",
+      "reason": "防御与攀爬无分类关系（攀爬∈运动）"
+    },
+    {
+      "source": "筑造",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.994434,
+      "verdict": "wrong",
+      "reason": "筑造是建造行为，潜水不在其下位"
+    },
+    {
+      "source": "筑造",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.991882,
+      "verdict": "wrong",
+      "reason": "筑造与「跃出水面」无分类关系"
+    },
+    {
+      "source": "筑造",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.9903,
+      "verdict": "wrong",
+      "reason": "筑造与攀爬无分类关系"
+    },
+    {
+      "source": "繁殖",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.989922,
+      "verdict": "wrong",
+      "reason": "繁殖与潜水无分类关系"
+    },
+    {
+      "source": "繁殖",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.985328,
+      "verdict": "wrong",
+      "reason": "繁殖与「跃出水面」无分类关系"
+    },
+    {
+      "source": "繁殖",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.983574,
+      "verdict": "wrong",
+      "reason": "繁殖与攀爬无分类关系"
+    },
+    {
+      "source": "捕猎",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.983168,
+      "verdict": "uncertain",
+      "reason": "潜水可作为捕猎手段（水獭、鸬鹚），但两者无分类关系"
+    },
+    {
+      "source": "捕猎",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.975901,
+      "verdict": "wrong",
+      "reason": "「跃出水面」多为交流/清理行为，不属捕猎"
+    },
+    {
+      "source": "捕猎",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.974488,
+      "verdict": "uncertain",
+      "reason": "攀爬可作为猫科捕猎手段，但非捕猎的下位动作"
+    },
+    {
+      "source": "通讯",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.955942,
+      "verdict": "wrong",
+      "reason": "通讯与潜水无分类关系"
+    },
+    {
+      "source": "通讯",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.946171,
+      "verdict": "uncertain",
+      "reason": "鲸类跃身击浪（breaching）被认为有通讯功能，但归属有争议"
+    },
+    {
+      "source": "通讯",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.938571,
+      "verdict": "wrong",
+      "reason": "通讯与攀爬无分类关系"
+    },
+    {
+      "source": "育幼",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.934946,
+      "verdict": "wrong",
+      "reason": "育幼与潜水无分类关系"
+    },
+    {
+      "source": "育幼",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.920211,
+      "verdict": "wrong",
+      "reason": "育幼与「跃出水面」无分类关系"
+    },
+    {
+      "source": "育幼",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.914385,
+      "verdict": "wrong",
+      "reason": "育幼与攀爬无分类关系"
+    },
+    {
+      "source": "取食",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.868557,
+      "verdict": "uncertain",
+      "reason": "潜水觅食常见（水獭、企鹅），但潜水∈运动而非取食"
+    },
+    {
+      "source": "取食",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.848566,
+      "verdict": "wrong",
+      "reason": "「跃出水面」不是取食方式"
+    },
+    {
+      "source": "取食",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "v",
+      "confidence": 0.842042,
+      "verdict": "uncertain",
+      "reason": "攀爬取食常见（松鼠、猴），但攀爬∈运动而非取食"
+    },
+    {
+      "source": "感知",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "潜水",
+      "target_pos": "v",
+      "confidence": 0.835485,
+      "verdict": "wrong",
+      "reason": "感知与潜水无分类关系"
+    },
+    {
+      "source": "感知",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "跃出水面",
+      "target_pos": "v",
+      "confidence": 0.825746,
+      "verdict": "wrong",
+      "reason": "感知与「跃出水面」无分类关系"
+    },
+    {
+      "source": "感知",
+      "source_pos": "v",
+      "relation": "can_do",
+      "target": "奔跑",
+      "target_pos": "v",
+      "confidence": 0.805802,
+      "verdict": "wrong",
+      "reason": "奔跑∈运动类，不属感知"
+    },
+    {
+      "source": "蛇",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "a",
+      "confidence": 0.986169,
+      "verdict": "wrong",
+      "reason": "蛇是变温动物"
+    },
+    {
+      "source": "蚯蚓",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.965991,
+      "verdict": "wrong",
+      "reason": "蚯蚓是无脊椎动物"
+    },
+    {
+      "source": "昆虫",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.956344,
+      "verdict": "wrong",
+      "reason": "昆虫是无脊椎动物"
+    },
+    {
+      "source": "青蛙",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "a",
+      "confidence": 0.932997,
+      "verdict": "wrong",
+      "reason": "青蛙是变温动物"
+    },
+    {
+      "source": "猫",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.907043,
+      "verdict": "wrong",
+      "reason": "猫是胎生哺乳动物"
+    },
+    {
+      "source": "鱼",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有羽毛",
+      "target_pos": "a",
+      "confidence": 0.885022,
+      "verdict": "wrong",
+      "reason": "鱼没有羽毛"
+    },
+    {
+      "source": "鱼",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "a",
+      "confidence": 0.874715,
+      "verdict": "wrong",
+      "reason": "绝大多数鱼是变温动物"
+    },
+    {
+      "source": "章鱼",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.871346,
+      "verdict": "wrong",
+      "reason": "章鱼是软体动物，无脊柱"
+    },
+    {
+      "source": "灵长类属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.849405,
+      "verdict": "correct",
+      "reason": "灵长类是脊椎动物"
+    },
+    {
+      "source": "长鼻类属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.844019,
+      "verdict": "correct",
+      "reason": "长鼻类（象）是脊椎动物"
+    },
+    {
+      "source": "河狸属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.840337,
+      "verdict": "correct",
+      "reason": "河狸是脊椎动物"
+    },
+    {
+      "source": "灵长类属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "a",
+      "confidence": 0.822138,
+      "verdict": "correct",
+      "reason": "灵长类是哺乳类，恒温"
+    },
+    {
+      "source": "长鼻类属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "a",
+      "confidence": 0.816397,
+      "verdict": "correct",
+      "reason": "长鼻类是哺乳类，恒温"
+    },
+    {
+      "source": "河狸属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "a",
+      "confidence": 0.816157,
+      "verdict": "correct",
+      "reason": "河狸是哺乳类，恒温"
+    },
+    {
+      "source": "翼手类属性组",
+      "source_pos": "n",
+      "relation": "has_property",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.808204,
+      "verdict": "correct",
+      "reason": "翼手类（蝙蝠）是脊椎动物"
+    },
+    {
+      "source": "营养素",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "抽象概念",
+      "target_pos": "n",
+      "confidence": 0.995981,
+      "verdict": "wrong",
+      "reason": "营养素是物质/化学成分，不是抽象概念"
+    },
+    {
+      "source": "猫",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "人",
+      "target_pos": "n",
+      "confidence": 0.991496,
+      "verdict": "wrong",
+      "reason": "猫与人是并列的哺乳动物分支，不构成上位"
+    },
+    {
+      "source": "脑电图信号",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "抽象概念",
+      "target_pos": "n",
+      "confidence": 0.989429,
+      "verdict": "wrong",
+      "reason": "脑电图信号是物理测量信号，不是抽象概念"
+    },
+    {
+      "source": "鱼",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "人",
+      "target_pos": "n",
+      "confidence": 0.988578,
+      "verdict": "wrong",
+      "reason": "鱼与人是并列的脊椎动物分支"
+    },
+    {
+      "source": "信息人造物",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "抽象概念",
+      "target_pos": "n",
+      "confidence": 0.903407,
+      "verdict": "uncertain",
+      "reason": "信息人造物（数据集、软件）是否算抽象物有争议"
+    },
+    {
+      "source": "医学概念",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "生物",
+      "target_pos": "n",
+      "confidence": 0.854497,
+      "verdict": "wrong",
+      "reason": "医学概念的上位应是抽象概念，不是生物（根节点选错）"
+    },
+    {
+      "source": "物理人造物",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "抽象概念",
+      "target_pos": "n",
+      "confidence": 0.841453,
+      "verdict": "wrong",
+      "reason": "物理人造物是具体器物，不是抽象概念"
+    },
+    {
+      "source": "鱼",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "无脊椎动物",
+      "target_pos": "n",
+      "confidence": 0.832707,
+      "verdict": "wrong",
+      "reason": "鱼是脊椎动物，不是无脊椎动物（需互斥公理）"
+    },
+    {
+      "source": "青蛙",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "无脊椎动物",
+      "target_pos": "n",
+      "confidence": 0.831902,
+      "verdict": "wrong",
+      "reason": "青蛙是脊椎动物"
+    },
+    {
+      "source": "鲤科",
+      "source_pos": "n",
+      "relation": "is_a",
+      "target": "无脊椎动物",
+      "target_pos": "n",
+      "confidence": 0.803649,
+      "verdict": "wrong",
+      "reason": "鲤科是硬骨鱼，属脊椎动物"
+    },
+    {
+      "source": "皮肤系统",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "猴子",
+      "target_pos": "n",
+      "confidence": 0.894418,
+      "verdict": "wrong",
+      "reason": "皮肤系统是器官系统层级，不属于 猴子 这个具体物种；正确是 part_of 脊椎动物（库内既有边）"
+    },
+    {
+      "source": "皮肤系统",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "蝙蝠",
+      "target_pos": "n",
+      "confidence": 0.880645,
+      "verdict": "wrong",
+      "reason": "皮肤系统是器官系统层级，不属于 蝙蝠 这个具体物种；正确是 part_of 脊椎动物（库内既有边）"
+    },
+    {
+      "source": "皮肤系统",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "大象",
+      "target_pos": "n",
+      "confidence": 0.877102,
+      "verdict": "wrong",
+      "reason": "皮肤系统是器官系统层级，不属于 大象 这个具体物种；正确是 part_of 脊椎动物（库内既有边）"
+    },
+    {
+      "source": "鲸类头部",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "猴子",
+      "target_pos": "n",
+      "confidence": 0.856482,
+      "verdict": "wrong",
+      "reason": "鲸类头部是鲸类的部分，不属于 猴子"
+    },
+    {
+      "source": "鲸类头部",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "蝙蝠",
+      "target_pos": "n",
+      "confidence": 0.839829,
+      "verdict": "wrong",
+      "reason": "鲸类头部是鲸类的部分，不属于 蝙蝠"
+    },
+    {
+      "source": "鲸类头部",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "大象",
+      "target_pos": "n",
+      "confidence": 0.836858,
+      "verdict": "wrong",
+      "reason": "鲸类头部是鲸类的部分，不属于 大象"
+    },
+    {
+      "source": "翼膜",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "海豚",
+      "target_pos": "n",
+      "confidence": 0.834764,
+      "verdict": "wrong",
+      "reason": "翼膜是蝙蝠的皮膜，海豚 没有翼膜"
+    },
+    {
+      "source": "翼膜",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "猴子",
+      "target_pos": "n",
+      "confidence": 0.830274,
+      "verdict": "wrong",
+      "reason": "翼膜是蝙蝠的皮膜，猴子 没有翼膜"
+    },
+    {
+      "source": "昆虫头部",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "海豚",
+      "target_pos": "n",
+      "confidence": 0.823574,
+      "verdict": "wrong",
+      "reason": "昆虫头部不属于 海豚"
+    },
+    {
+      "source": "昆虫头部",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "猴子",
+      "target_pos": "n",
+      "confidence": 0.810336,
+      "verdict": "wrong",
+      "reason": "昆虫头部不属于 猴子"
+    },
+    {
+      "source": "翼膜",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "大象",
+      "target_pos": "n",
+      "confidence": 0.809493,
+      "verdict": "wrong",
+      "reason": "翼膜是蝙蝠的皮膜，大象 没有翼膜"
+    },
+    {
+      "source": "昆虫头部",
+      "source_pos": "n",
+      "relation": "part_of",
+      "target": "蝙蝠",
+      "target_pos": "n",
+      "confidence": 0.808825,
+      "verdict": "wrong",
+      "reason": "昆虫头部不属于 蝙蝠"
+    },
+    {
+      "source": "犬科",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.923573,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "恶性结节",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "心脏",
+      "target_pos": "n",
+      "confidence": 0.918769,
+      "verdict": "wrong",
+      "reason": "结节没有心脏"
+    },
+    {
+      "source": "鲤科",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.916638,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "硬骨鱼",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.91623,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "猫科",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.915397,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "恶性结节",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "肺",
+      "target_pos": "n",
+      "confidence": 0.912958,
+      "verdict": "wrong",
+      "reason": "结节没有肺"
+    },
+    {
+      "source": "爬行纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.912828,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "硬骨鱼",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.898795,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "蚯蚓",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.898446,
+      "verdict": "wrong",
+      "reason": "蚯蚓无脊柱（关系名与事实同时错）"
+    },
+    {
+      "source": "鲤科",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.897223,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "鸟类",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "尾巴",
+      "target_pos": "n",
+      "confidence": 0.896104,
+      "verdict": "correct",
+      "reason": "鸟类有尾巴"
+    },
+    {
+      "source": "爬行纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.89378,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "环节动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.891426,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "软体动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.889352,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "恶性结节",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "语法规则",
+      "target_pos": "n",
+      "confidence": 0.888442,
+      "verdict": "wrong",
+      "reason": "语法规则与结节无关"
+    },
+    {
+      "source": "甲壳纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.887754,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "头足纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.885272,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "蚯蚓",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.884868,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "节肢动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.884505,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "无脊椎动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.879519,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "哺乳动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.878088,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "昆虫",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.877114,
+      "verdict": "wrong",
+      "reason": "昆虫无脊柱（关系名与事实同时错）"
+    },
+    {
+      "source": "虾",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.875403,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "蝴蝶",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.8745,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "雀形目",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.873792,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "昆虫纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.873091,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "昆虫",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.864812,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "鲤科",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.862708,
+      "verdict": "correct",
+      "reason": "鲤科多有口须"
+    },
+    {
+      "source": "硬骨鱼",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.859112,
+      "verdict": "correct",
+      "reason": "硬骨鱼多有口须/触须"
+    },
+    {
+      "source": "爬行纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.858034,
+      "verdict": "wrong",
+      "reason": "爬行纲无口须"
+    },
+    {
+      "source": "两栖纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.854201,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "雀形目",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.851826,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "狗",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.841971,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "鱼",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.840722,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "鸟",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.834963,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "良性结节",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "肺",
+      "target_pos": "n",
+      "confidence": 0.833364,
+      "verdict": "wrong",
+      "reason": "结节没有肺"
+    },
+    {
+      "source": "甲壳纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.830133,
+      "verdict": "wrong",
+      "reason": "甲壳纲有触角，不是口须"
+    },
+    {
+      "source": "鸟类",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.829664,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "环节动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.829408,
+      "verdict": "wrong",
+      "reason": "环节动物无口须"
+    },
+    {
+      "source": "头足纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.828594,
+      "verdict": "wrong",
+      "reason": "头足纲有触腕，不是口须"
+    },
+    {
+      "source": "软体动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.828576,
+      "verdict": "wrong",
+      "reason": "软体动物无口须"
+    },
+    {
+      "source": "良性结节",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "心脏",
+      "target_pos": "n",
+      "confidence": 0.827855,
+      "verdict": "wrong",
+      "reason": "结节没有心脏"
+    },
+    {
+      "source": "蛇",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.823612,
+      "verdict": "wrong",
+      "reason": "蛇无口须（吐信是舌，不是须）"
+    },
+    {
+      "source": "蝴蝶",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.821305,
+      "verdict": "uncertain",
+      "reason": "蝴蝶有触角，口语是否称「胡须」有争议"
+    },
+    {
+      "source": "昆虫纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.819696,
+      "verdict": "uncertain",
+      "reason": "昆虫纲有触角，术语与「胡须」不完全对应"
+    },
+    {
+      "source": "虾",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.818785,
+      "verdict": "correct",
+      "reason": "虾有长触须（口语称胡须）"
+    },
+    {
+      "source": "蚯蚓",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.818072,
+      "verdict": "wrong",
+      "reason": "蚯蚓无口须"
+    },
+    {
+      "source": "蛇",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "有脊柱",
+      "target_pos": "a",
+      "confidence": 0.81663,
+      "verdict": "wrong_relation",
+      "reason": "「有脊柱」是属性（has_property），不是部件；typically_has 的 asserted 边里目标是部件名词"
+    },
+    {
+      "source": "节肢动物",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.814696,
+      "verdict": "uncertain",
+      "reason": "节肢动物有触角，术语与「胡须」不完全对应"
+    },
+    {
+      "source": "鸟类",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "卵生",
+      "target_pos": "a",
+      "confidence": 0.811404,
+      "verdict": "wrong_relation",
+      "reason": "「卵生」是属性（has_property），不是部件"
+    },
+    {
+      "source": "雀形目",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.809717,
+      "verdict": "wrong",
+      "reason": "雀形目无口须"
+    },
+    {
+      "source": "两栖纲",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.806678,
+      "verdict": "wrong",
+      "reason": "两栖纲无口须"
+    },
+    {
+      "source": "良性结节",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胸鳍",
+      "target_pos": "n",
+      "confidence": 0.803669,
+      "verdict": "wrong",
+      "reason": "结节没有胸鳍"
+    },
+    {
+      "source": "青蛙",
+      "source_pos": "n",
+      "relation": "typically_has",
+      "target": "胡须",
+      "target_pos": "n",
+      "confidence": 0.802837,
+      "verdict": "wrong",
+      "reason": "青蛙无口须"
+    },
+    {
+      "source": "猫",
+      "source_pos": "",
+      "relation": "is_a",
+      "target": "猫科",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "猫科",
+      "source_pos": "",
+      "relation": "is_a",
+      "target": "哺乳动物",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "哺乳动物",
+      "source_pos": "",
+      "relation": "is_a",
+      "target": "脊椎动物",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "运动",
+      "source_pos": "",
+      "relation": "can_do",
+      "target": "攀爬",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "繁殖",
+      "source_pos": "",
+      "relation": "can_do",
+      "target": "产卵",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "哺乳动物属性组",
+      "source_pos": "",
+      "relation": "has_property",
+      "target": "温血",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "鱼类属性组",
+      "source_pos": "",
+      "relation": "has_property",
+      "target": "冷血",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "猫",
+      "source_pos": "",
+      "relation": "typically_has",
+      "target": "头部",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "狗",
+      "source_pos": "",
+      "relation": "typically_has",
+      "target": "前肢",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "心脏",
+      "source_pos": "",
+      "relation": "part_of",
+      "target": "循环系统",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "循环系统",
+      "source_pos": "",
+      "relation": "part_of",
+      "target": "脊椎动物",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    },
+    {
+      "source": "鹰",
+      "source_pos": "",
+      "relation": "has_part",
+      "target": "翅膀",
+      "target_pos": "",
+      "confidence": null,
+      "verdict": "correct",
+      "reason": "库内 asserted 真边（对照组，用于计算分离度）",
+      "control": true
+    }
+  ]
+}
